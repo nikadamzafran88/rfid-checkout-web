@@ -1,0 +1,48 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* |--------------------------------------------------------------------------
+| BASE STYLES: Minimal requirements for a clean, light application
+|--------------------------------------------------------------------------
+*/
+:root {
+  /* Ensure system uses light theme */
+  color-scheme: light; 
+  /* Font structure that supports bold/heavy weights for metrics */
+  font-family: 'Inter', system-ui, -apple-apple, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
+  line-height: 1.5;
+  font-weight: 400;
+  
+  /* Set global background to light gray, letting cards stand out */
+  color: #0f172a; /* Dark text color */
+  background-color: #f0f2f5; /* Subtle Material light background */
+  
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  /* Ensure the body expands to allow the fixed sidebar layout to work */
+  display: flex;
+  place-items: stretch;
+}
+
+/* Global Link and Heading Styles */
+a {
+  font-weight: 500;
+  text-decoration: none;
+}
+h1 {
+  font-size: 1.875rem; 
+  line-height: 1.15;
+  margin: 0;
+}
+/* Ensure the standard Tailwind classes are available */
