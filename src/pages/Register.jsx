@@ -1,19 +1,22 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { createUserWithEmailAndPassword } from 'firebase/auth';
+import { createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore'; // For Firestore operations
 import { auth, db } from '../firebaseConfig'; // Import your initialized services
+import { Paper, Box, Typography, TextField, Button, Alert, CircularProgress } from '@mui/material';
 
 const RegisterPage = () => {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [fullName, setFullName] = useState('');
     const [error, setError] = useState('');
+    const [submitting, setSubmitting] = useState(false);
     const navigate = useNavigate();
 
     const handleRegister = async (e) => {
         e.preventDefault();
         setError(''); // Clear previous errors
+        setSubmitting(true);
 
         try {
             // STEP 1: Create user in Firebase Authentication
@@ -30,66 +33,93 @@ const RegisterPage = () => {
             });
 
             console.log('User Registered Successfully and profile created in Firestore.');
+            // newly created users are automatically signed in by Firebase.
+            // Sign them out so the login page doesn't auto-redirect based on currentUser.
+            await signOut(auth);
             navigate('/login'); // Redirect to login page after successful registration
 
         } catch (err) {
             console.error('Registration Error:', err);
             // Display a user-friendly error message
-            setError(`Registration failed. Error: ${err.message}`);
+            setError(err?.message || 'Registration failed.');
+        } finally {
+            setSubmitting(false);
         }
     };
 
     return (
-        <div className="flex items-center justify-center min-h-screen bg-gray-50">
-            <div className="p-10 bg-white rounded-xl shadow-2xl w-full max-w-sm border border-gray-100">
-                <h2 className="text-3xl font-light mb-8 text-center text-gray-800">
-                    Create Retail Account
-                </h2>
-                <form onSubmit={handleRegister}>
-                    {error && <p className="text-red-500 mb-4 text-sm font-medium">{error}</p>}
-                    
-                    {/* Full Name Input (Minimalist Style) */}
-                    <input
+        <Box sx={{ position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', px: 2 }}>
+            <Paper elevation={3} sx={{ width: '100%', maxWidth: 460, p: 4, borderRadius: 2 }}>
+                <Box sx={{ textAlign: 'center', mb: 2 }}>
+                    <Typography variant="h5" component="h1" gutterBottom>
+                        Create Retail Account
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                        Create an account to start using the self-checkout.
+                    </Typography>
+                </Box>
+
+                {error && (
+                    <Alert severity="error" sx={{ mb: 2 }}>
+                        {error}
+                    </Alert>
+                )}
+
+                <Box component="form" onSubmit={handleRegister} noValidate>
+                    <TextField
+                        margin="normal"
+                        label="Full name"
                         type="text"
-                        placeholder="Full Name"
+                        required
+                        fullWidth
                         value={fullName}
                         onChange={(e) => setFullName(e.target.value)}
-                        className="w-full p-3 mb-4 border border-gray-300 rounded-lg focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition duration-150"
-                        required
                     />
-                    {/* Email Input (Minimalist Style) */}
-                    <input
+
+                    <TextField
+                        margin="normal"
+                        label="Email"
                         type="email"
-                        placeholder="Email"
+                        required
+                        fullWidth
+                        autoComplete="email"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
-                        className="w-full p-3 mb-4 border border-gray-300 rounded-lg focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition duration-150"
-                        required
                     />
-                    {/* Password Input (Minimalist Style) */}
-                    <input
+
+                    <TextField
+                        margin="normal"
+                        label="Password"
                         type="password"
-                        placeholder="Password"
+                        required
+                        fullWidth
+                        autoComplete="new-password"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        className="w-full p-3 mb-6 border border-gray-300 rounded-lg focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition duration-150"
-                        required
                     />
-                    <button
+
+                    <Button
                         type="submit"
-                        className="w-full py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition duration-200"
+                        variant="contained"
+                        color="primary"
+                        fullWidth
+                        sx={{ mt: 2 }}
+                        disabled={submitting}
                     >
-                        Register
-                    </button>
-                </form>
-                <p className="mt-6 text-center text-sm text-gray-500">
-                    Already have an account? 
-                    <span onClick={() => navigate('/login')} className="text-indigo-600 cursor-pointer hover:underline ml-1 font-medium">
-                        Login here
-                    </span>
-                </p>
-            </div>
-        </div>
+                        {submitting ? <CircularProgress size={20} /> : 'Register'}
+                    </Button>
+                </Box>
+
+                <Box sx={{ mt: 2, textAlign: 'center' }}>
+                    <Typography variant="body2" color="text.secondary">
+                        Already have an account?{' '}
+                        <Box component="span" onClick={() => navigate('/login')} sx={{ color: 'primary.main', cursor: 'pointer', ml: 0.5 }}>
+                            Login here
+                        </Box>
+                    </Typography>
+                </Box>
+            </Paper>
+        </Box>
     );
 };
 

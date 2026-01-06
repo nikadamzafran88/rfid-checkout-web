@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
@@ -14,6 +15,7 @@ export const AuthProvider = ({ children }) => {
     // State declarations
     const [currentUser, setCurrentUser] = useState(null); 
     const [currentRole, setCurrentRole] = useState(null); 
+    const [blockedUntilMs, setBlockedUntilMs] = useState(0);
     const [loading, setLoading] = useState(true); 
 
     // Define logout here so it's scoped correctly
@@ -24,8 +26,10 @@ export const AuthProvider = ({ children }) => {
     useEffect(() => {
         // Firebase listener for auth state changes
         const unsubscribe = onAuthStateChanged(auth, async (user) => {
+            console.debug('[AuthContext] onAuthStateChanged fired - user:', user);
             setCurrentUser(user);
             setCurrentRole(null); // Reset role upon auth change
+            setBlockedUntilMs(0);
 
             if (user) {
                 // START: CRITICAL FIX - Ensure loading state resolves
@@ -35,8 +39,28 @@ export const AuthProvider = ({ children }) => {
                     const docSnap = await getDoc(userRef);
 
                     if (docSnap.exists()) {
-                        // Update the role state
-                        setCurrentRole(docSnap.data().role); 
+                        // Update the role state (normalize to lowercase to avoid case mismatches)
+                        const rawRole = docSnap.data().role;
+                        const role = typeof rawRole === 'string' ? rawRole.toLowerCase() : '';
+                        console.debug('[AuthContext] fetched role from Firestore (normalized):', role);
+                        setCurrentRole(role);
+
+                        // Temporary access block support
+                        const rawBlockedUntil = docSnap.data().blockedUntil ?? docSnap.data().blocked_until ?? docSnap.data().blockedUntilAt ?? null;
+                        let ms = 0;
+                        if (rawBlockedUntil) {
+                            if (typeof rawBlockedUntil === 'object' && typeof rawBlockedUntil.seconds === 'number') {
+                                ms = Math.floor(rawBlockedUntil.seconds * 1000);
+                            } else if (typeof rawBlockedUntil === 'string') {
+                                const parsed = Date.parse(rawBlockedUntil);
+                                ms = Number.isFinite(parsed) ? parsed : 0;
+                            } else if (rawBlockedUntil instanceof Date) {
+                                ms = rawBlockedUntil.getTime();
+                            } else if (typeof rawBlockedUntil === 'number') {
+                                ms = Number.isFinite(rawBlockedUntil) ? rawBlockedUntil : 0;
+                            }
+                        }
+                        setBlockedUntilMs(ms);
                     } else {
                         // If profile is missing (e.g., partial failure), assign a default safe role
                         console.warn("User profile not found in Firestore. Assigning 'customer' role.");
@@ -49,7 +73,7 @@ export const AuthProvider = ({ children }) => {
                 }
                 // END: CRITICAL FIX
             }
-            
+            console.debug('[AuthContext] setting loading=false, currentUser:', user);
             setLoading(false); // <--- THIS IS NOW GUARANTEED TO RUN, RESOLVING THE FREEZE
         });
 
@@ -61,6 +85,7 @@ export const AuthProvider = ({ children }) => {
     const value = {
         currentUser,
         currentRole,
+        blockedUntilMs,
         loading,
         logout,
     };

@@ -13,7 +13,7 @@ export default function useRecentTransactions(limitCount = 4) {
     let mounted = true;
 
     const fetchData = async () => {
-      try {
+        try {
         const txRef = collection(db, 'transactions');
         const txQuery = query(txRef, orderBy('timestamp', 'desc'), limit(limitCount));
         const txSnap = await getDocs(txQuery);
@@ -23,16 +23,18 @@ export default function useRecentTransactions(limitCount = 4) {
           // provide a fallback paymentStatus for UI when not present
           paymentStatus: doc.data().paymentStatus || (Math.random() > 0.5 ? 'Success' : 'Failed'),
         }));
-
-        if (!mounted) return;
-        setRecentTransactions(txList);
+        if (mounted) {
+          setRecentTransactions(txList);
+        }
       } catch (err) {
-        if (!mounted) return;
-        console.error('useRecentTransactions error', err);
-        setError(err);
+        if (mounted) {
+          console.error('useRecentTransactions error', err);
+          setError(err);
+        }
       } finally {
-        if (!mounted) return;
-        setLoading(false);
+        if (mounted) {
+          setLoading(false);
+        }
       }
     };
 

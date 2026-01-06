@@ -11,7 +11,14 @@ const LogoutButton = () => {
     const handleLogout = async () => {
         try {
             await logout();
-            navigate('/login');
+            // Clear any kiosk station state so logout always goes to admin login
+            try {
+                localStorage.removeItem('station_id')
+                localStorage.removeItem('station_authenticated')
+            } catch (e) {
+                console.warn('localStorage clear failed on logout', e)
+            }
+            navigate('/login', { replace: true });
         } catch (error) {
             console.error('Logout Failed:', error);
             alert('Failed to log out. Please try again.');

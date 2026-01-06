@@ -46,3 +46,44 @@ h1 {
   margin: 0;
 }
 /* Ensure the standard Tailwind classes are available */
+
+/* ------------------
+   Fallback component styles (safety when Tailwind isn't applied)
+   These provide minimal, pleasant defaults so the UI doesn't render as plain links/lists.
+   ------------------ */
+.container-wide {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.card {
+  background: #ffffff;
+  border-radius: 0.75rem;
+  box-shadow: 0 6px 18px rgba(15,23,42,0.06);
+  border: 1px solid rgba(15,23,42,0.06);
+}
+
+.material-card {
+  background: #ffffff;
+  border-radius: 0.75rem;
+  box-shadow: 0 6px 18px rgba(15,23,42,0.06);
+  border: 1px solid #e6e6e6;
+}
+
+/* Make buttons sensible by default */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(0,0,0,0.08);
+  background: #fff;
+  color: #111827;
+}
+
+/* Small helpers used by layouts */
+.flex { display: flex; }
+.hidden { display: none; }
+.sm\:block { display: block; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

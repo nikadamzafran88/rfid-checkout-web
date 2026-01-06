@@ -1,6 +1,6 @@
 export default {
   plugins: {
-    // CORRECTED: Use the full package name for Tailwind v4 integration
+    // Use the PostCSS integration package for Tailwind v4
     '@tailwindcss/postcss': {},
     autoprefixer: {},
   },
