@@ -22,7 +22,7 @@ const databaseURL = String(rawDatabaseURL).trim().replace(/\/+$/, '')
 
 // Firebase configuration
 const firebaseConfig = {
-    apiKey: 'AIzaSyDKgbMCB8SEwOMfP9SqgDOqeT4mCoTirw8',
+    apiKey: '',
     authDomain: 'rfid-self-checkout-system.firebaseapp.com',
     projectId,
     databaseURL,
