@@ -17,8 +17,7 @@
     "@mui/material": "^7.3.5",
     "@stripe/stripe-js": "^8.5.2",
     "@tailwindcss/cli": "^4.1.17",
-    "@tailwindcss/postcss": "^4.1.17",
-    "autoprefixer": "^10.4.22",
+    "autoprefixer": "^10.4.23",
     "chart.js": "^4.5.1",
     "firebase": "^12.6.0",
     "html-to-image": "^1.11.13",
@@ -33,11 +32,12 @@
     "recharts": "^3.6.0",
     "regression": "^2.0.1",
     "styled-components": "^6.1.19",
-    "tailwindcss": "^4.1.17",
+    "tailwindcss": "^4.1.18",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
+    "@tailwindcss/postcss": "^4.1.18",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react": "^5.1.0",

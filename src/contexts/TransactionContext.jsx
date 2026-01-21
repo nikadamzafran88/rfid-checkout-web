@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react'
 import { auth, db, rtdb, fns } from '../services/firebase'
 import { ref as rdbRef, onValue, set as rdbSet, onDisconnect, update, serverTimestamp } from 'firebase/database'
-import { collection, query, where, getDocs } from 'firebase/firestore'
+import { collection, query, where, getDocs, doc as fsDoc, setDoc, serverTimestamp as firestoreServerTimestamp } from 'firebase/firestore'
 import { httpsCallable } from 'firebase/functions'
 
 const TransactionContext = createContext(null)
@@ -17,7 +17,18 @@ export function TransactionProvider({ children }) {
   const [amount, setAmount] = useState(0)
   const [lastTxId, setLastTxId] = useState(null)
   const [lastReceiptToken, setLastReceiptToken] = useState(null)
+  const [membership, setMembership] = useState(() => {
+    try {
+      const raw = localStorage.getItem('membership')
+      return raw ? JSON.parse(raw) : null
+    } catch {
+      return null
+    }
+  })
   const [lastActivity, setLastActivity] = useState(() => Date.now())
+  const [redeemPoints, setRedeemPoints] = useState(0)
+  const POINT_TO_MYR = 0.01 // 1 point = RM0.01
+  const discountAmount = Math.max(0, Math.round((Number(redeemPoints || 0) * POINT_TO_MYR) * 100) / 100)
   const [idleRemainingSeconds, setIdleRemainingSeconds] = useState(0)
   const [rtdbConnected, setRtdbConnected] = useState(false)
   const IDLE_TIMEOUT_MS = 2 * 60 * 1000 // 2 minutes inactivity -> reset to IDLE
@@ -37,12 +48,17 @@ export function TransactionProvider({ children }) {
     const paymentStatus = paymentMethod === 'BILLPLZ' ? 'Paid (Billplz)' : paymentMethod === 'STRIPE' ? 'Paid (Stripe)' : 'Paid'
 
     const recordTx = httpsCallable(fns, 'recordTransactionAndDecrement')
+    const payloadAmount = paymentDetails && Number(paymentDetails.amountOverride) >= 0 ? Number(paymentDetails.amountOverride) : Number(amount || 0)
     const res = await recordTx({
       stationId,
-      amount,
+      amount: payloadAmount,
       items: cart,
       paymentMethod,
       paymentDetails: paymentDetails || null,
+      membershipId: membership?.membershipId || null,
+      redeemedPoints: Number(redeemPoints || 0),
+      discountAmount: Number(discountAmount || 0),
+      promoCode: paymentDetails?.promoCode || null,
       // Keep customerUID in doc (function will use auth uid; this is informational only)
       customerUID,
       paymentStatus,
@@ -53,8 +69,52 @@ export function TransactionProvider({ children }) {
     const receiptToken = res?.data?.receiptToken ? String(res.data.receiptToken) : null
     setLastTxId(String(txId))
     setLastReceiptToken(receiptToken)
+
+    // Refresh membership data after transaction so UI shows updated points
+    try {
+      if (membership && membership.membershipId) {
+        const getMembership = httpsCallable(fns, 'getMembership')
+        const mres = await getMembership({ membershipId: membership.membershipId })
+        const mdata = mres?.data || null
+        if (mdata) {
+          try {
+            if (mdata.membershipId) delete mdata.membershipId
+          } catch {}
+          setMembership({ membershipId: mres.data.membershipId, ...(mres.data || {}) })
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to refresh membership after transaction', e)
+    }
+
+    // Persist sold RFID UIDs so scanning them again will show "sold" until the tag is moved.
+    try {
+      const writes = []
+      for (const it of cart) {
+        const uid = it?.uid
+        const productId = it?.id || it?.productId || null
+        if (uid && productId) {
+          writes.push(
+            setDoc(fsDoc(db, 'soldRFIDs', String(uid)), {
+              productId: String(productId),
+              txId: String(txId),
+              soldAt: firestoreServerTimestamp(),
+            })
+          )
+        }
+      }
+      if (writes.length > 0) await Promise.all(writes)
+    } catch (e) {
+      console.warn('Failed to write soldRFIDs markers', e)
+    }
     return { id: String(txId), receiptToken }
-  }, [cart, amount, stationId])
+  }, [cart, amount, stationId, membership, redeemPoints, discountAmount])
+
+  // Bound setter for redeem points (ensure not negative)
+  const setRedeemPointsBounded = useCallback((n) => {
+    const v = Math.max(0, Math.floor(Number(n) || 0))
+    setRedeemPoints(v)
+  }, [])
 
   const clearCart = useCallback(() => {
     setCart([])
@@ -163,7 +223,7 @@ export function TransactionProvider({ children }) {
     }
     setCart([])
     setLastActivity(Date.now())
-    setStep('SCANNING')
+    setStep('MEMBERSHIP')
   }, [])
 
   const end = useCallback(() => {
@@ -175,6 +235,11 @@ export function TransactionProvider({ children }) {
   const value = {
     stationId,
     setStationId: (id) => { setStationId(id); localStorage.setItem('station_id', id) },
+    membership,
+    setMembership: (m) => {
+      try { if (m) localStorage.setItem('membership', JSON.stringify(m)); else localStorage.removeItem('membership') } catch {}
+      setMembership(m)
+    },
     step,
     setStep,
     cart,
@@ -201,6 +266,11 @@ export function TransactionProvider({ children }) {
     collection,
     where,
     getDocs
+    ,
+    redeemPoints,
+    setRedeemPoints: setRedeemPointsBounded,
+    discountAmount,
+    POINT_TO_MYR,
   }
 
   return (

@@ -31,6 +31,9 @@ const InventoryManagement = () => {
     const theme = useTheme();
     const { currentUser, currentRole } = useAuth();
     const [inventoryList, setInventoryList] = useState([]);
+    const [filterStatus, setFilterStatus] = useState('ALL');
+    const [sortBy, setSortBy] = useState('name');
+    const [sortDir, setSortDir] = useState('asc');
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [stockUpdates, setStockUpdates] = useState({}); // Stores temporary stock edits
@@ -238,6 +241,30 @@ const InventoryManagement = () => {
             </Box>
         );
 
+    // --- Stock status helper ---
+    const getStockStatus = (level) => {
+        if (level === 0) return 'Out of Stock';
+        if (level < 5) return 'Low';
+        return 'Normal';
+    };
+
+    // --- Filter and sort logic ---
+    const filteredSortedList = inventoryList
+        .filter(item => {
+            const status = getStockStatus(item.stockLevel);
+            if (filterStatus === 'ALL') return true;
+            return status === filterStatus;
+        })
+        .sort((a, b) => {
+            let cmp = 0;
+            if (sortBy === 'name') {
+                cmp = String(a.name || '').localeCompare(String(b.name || ''));
+            } else if (sortBy === 'stock') {
+                cmp = (a.stockLevel || 0) - (b.stockLevel || 0);
+            }
+            return sortDir === 'asc' ? cmp : -cmp;
+        });
+
     return (
         <Box sx={{ p: 3 }}>
             <PageHeader title="Inventory" subtitle="Update stock levels for products. Changes are saved in a single batch update." />
@@ -254,6 +281,43 @@ const InventoryManagement = () => {
                 </Typography>
             </Alert>
 
+            {/* Filter and sort controls */}
+            <Box sx={{ display: 'flex', gap: 2, mb: 2, flexWrap: 'wrap', alignItems: 'center' }}>
+                <TextField
+                    select
+                    label="Stock Status"
+                    size="small"
+                    value={filterStatus}
+                    onChange={e => setFilterStatus(e.target.value)}
+                    SelectProps={{ native: true }}
+                    sx={{ minWidth: 160 }}
+                >
+                    <option value="ALL">All Statuses</option>
+                    <option value="Out of Stock">Out of Stock</option>
+                    <option value="Low">Low</option>
+                    <option value="Normal">Normal</option>
+                </TextField>
+                <TextField
+                    select
+                    label="Sort By"
+                    size="small"
+                    value={sortBy}
+                    onChange={e => setSortBy(e.target.value)}
+                    SelectProps={{ native: true }}
+                    sx={{ minWidth: 120 }}
+                >
+                    <option value="name">Name</option>
+                    <option value="stock">Stock Level</option>
+                </TextField>
+                <Button
+                    variant="outlined"
+                    size="small"
+                    onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}
+                >
+                    {sortDir === 'asc' ? 'Asc' : 'Desc'}
+                </Button>
+            </Box>
+
             <SectionCard
                 title="Product Stock Levels"
                 actions={
@@ -262,7 +326,6 @@ const InventoryManagement = () => {
                     </Button>
                 }
             >
-
                 <TableContainer>
                     <Table>
                         <TableHead
@@ -275,17 +338,26 @@ const InventoryManagement = () => {
                                 <TableCell sx={{ fontWeight: 600 }}>Product Name</TableCell>
                                 <TableCell sx={{ fontWeight: 600 }}>Category</TableCell>
                                 <TableCell sx={{ fontWeight: 600 }}>Current Stock</TableCell>
+                                <TableCell sx={{ fontWeight: 600 }}>Stock Status</TableCell>
                                 <TableCell sx={{ fontWeight: 600 }}>Set New Stock</TableCell>
                             </TableRow>
                         </TableHead>
 
                         <TableBody>
-                            {inventoryList.map((item) => (
+                            {filteredSortedList.map((item) => (
                                 <TableRow key={item.id} sx={item.stockLevel < 5 ? { bgcolor: 'error.50' } : { '&:hover': { bgcolor: 'grey.50' } }}>
                                     <TableCell sx={{ fontWeight: 700 }}>{item.name}</TableCell>
                                     <TableCell>{item.category}</TableCell>
                                     <TableCell>
                                         <Typography sx={{ fontWeight: 700, color: item.stockLevel < 5 ? 'error.main' : 'text.primary' }}>{item.stockLevel}</Typography>
+                                    </TableCell>
+                                    <TableCell>
+                                        <Typography sx={{ fontWeight: 700, color:
+                                            item.stockLevel === 0 ? 'error.main' :
+                                            item.stockLevel < 5 ? 'warning.main' : 'success.main'
+                                        }}>
+                                            {getStockStatus(item.stockLevel)}
+                                        </Typography>
                                     </TableCell>
                                     <TableCell>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>

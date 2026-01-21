@@ -17,6 +17,8 @@ import FullscreenExitIcon from '@mui/icons-material/FullscreenExit'
 import { TransactionProvider, useTransaction } from '../contexts/TransactionContext'
 import Setup from '../components/staff/Setup'
 import StartScreen from '../components/kiosk/StartScreen'
+import MembershipPrompt from '../components/kiosk/MembershipPrompt'
+import MembershipRegister from '../components/kiosk/MembershipRegister'
 import ScanningScreen from '../components/kiosk/ScanningScreen'
 import PaymentScreen from '../components/kiosk/PaymentScreen'
 import ReceiptScreen from '../components/kiosk/ReceiptScreen'
@@ -316,6 +318,10 @@ function KioskInner() {
   switch (step) {
     case 'IDLE':
       return <StartScreen />
+    case 'MEMBERSHIP':
+      return <MembershipPrompt />
+    case 'MEMBERSHIP_REGISTER':
+      return <MembershipRegister />
     case 'SCANNING':
       return <ScanningScreen />
     case 'PAYMENT':
@@ -416,10 +422,11 @@ export default function CustomerCheckout() {
       }
 
       if (!rootEl) return
-      if (rootEl.requestFullscreen) await rootEl.requestFullscreen()
-      else if (rootEl.webkitRequestFullscreen) await rootEl.webkitRequestFullscreen()
-      else if (rootEl.mozRequestFullScreen) await rootEl.mozRequestFullScreen()
-      else if (rootEl.msRequestFullscreen) await rootEl.msRequestFullscreen()
+      // Fullscreen entry intentionally disabled to avoid iPadOS displaying the "X" escape button.
+      // Let users add to Home Screen to use standalone/installed mode instead of forcing fullscreen.
+      // Previously this called requestFullscreen / webkitRequestFullscreen etc. — removed per kiosk guidance.
+      console.info('Fullscreen entry disabled; use Add to Home Screen on iPad for standalone mode.')
+      return
     } catch {
       // Intentionally ignore — Fullscreen API can fail based on user gesture/browser policies.
     }

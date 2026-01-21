@@ -422,6 +422,13 @@ export default function StationManagement() {
                   minRows={4}
                 />
                 <Box sx={{ display: 'flex', gap: 1, mt: 1.25 }}>
+                  <Button
+                    variant="outlined"
+                    onClick={() => setKioskWelcomeMessage('Welcome to NAZ Retails\nClick the Start button to start')}
+                    disabled={kioskSaveLoading}
+                  >
+                    Use NAZ template
+                  </Button>
                   <Button variant="contained" onClick={saveKioskMessage} disabled={kioskSaveLoading}>
                     {kioskSaveLoading ? 'Saving…' : 'Save Message'}
                   </Button>

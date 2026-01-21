@@ -66,24 +66,28 @@ const MainLayout = () => {
     {
       title: 'Products',
       items: [
-        { to: '/admin/products', Icon: ShoppingCart, label: 'Product Management' },
-        { to: '/admin/products/master', Icon: Package, label: 'Product Master' },
-        { to: '/admin/products/tags', Icon: Package, label: 'Tag UID Link' },
-        { to: '/admin/products/items', Icon: Package, label: 'Product Items' },
+        {
+          label: 'Products',
+          Icon: ShoppingCart,
+          children: [
+            { to: '/admin/products/master', label: 'Product Master' },
+            { to: '/admin/products/tags', label: 'Tag UID Link' },
+            { to: '/admin/products/items', label: 'Product Items' },
+          ],
+        },
       ],
     },
     {
       title: 'People',
       items: [
         { to: '/admin/users', Icon: Users, label: 'Manage Users' },
-        { to: '/admin/attendance', Icon: ListOrdered, label: 'Staff Attendance' },
-        { to: '/admin/leaves', Icon: FileText, label: 'Leave Requests' },
+        { to: '/admin/memberships', Icon: User, label: 'Memberships' },
       ],
     },
     {
       title: 'Reports',
       items: [
-        { to: '/admin/reports', Icon: FileText, label: 'Financial Reports' },
+        { to: '/admin/reports', Icon: FileText, label: 'Analytics Dashboard' },
       ],
     },
     {
@@ -109,7 +113,7 @@ const MainLayout = () => {
 
     // Keep staff out of routes that are protected to admin/manager.
     // This avoids the UX of clicking a link and landing on "Unauthorized".
-    const blockedLabels = new Set(['Manage Users', 'Logs', 'Stations', 'Financial Reports']);
+    const blockedLabels = new Set(['Manage Users', 'Logs', 'Stations', 'Analytics Dashboard']);
     return !blockedLabels.has(item?.label);
   };
 
@@ -141,9 +145,9 @@ const MainLayout = () => {
         >
           {!collapsed ? (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Box sx={{ height: 36, width: 36, borderRadius: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'primary.main', color: 'common.white', fontWeight: 700 }}>MM</Box>
+              <Box sx={{ height: 36, width: 36, borderRadius: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'primary.main', color: 'common.white', fontWeight: 700 }}>NAZ</Box>
               <Box>
-                <Box component="div" sx={{ fontSize: 13, fontWeight: 'bold' }}>M&amp;M RSCS</Box>
+                <Box component="div" sx={{ fontSize: 13, fontWeight: 'bold' }}>NAZ retails</Box>
                 <Box component="div" sx={{ fontSize: 11, color: 'text.secondary' }}>Admin Portal</Box>
               </Box>
             </Box>

@@ -9,6 +9,16 @@ import { getStorage } from 'firebase/storage'
 
 const projectId = 'rfid-self-checkout-system'
 
+// NOTE:
+// - Firebase Web config values (including apiKey) are not "secrets" because they must be shipped to the browser.
+// - However, you should still avoid committing them to git so you can rotate them easily.
+// - Security must be enforced by Firestore/RTDB rules + (optionally) App Check.
+
+const apiKey = String(import.meta.env.VITE_FIREBASE_API_KEY || '').trim()
+if (!apiKey) {
+    throw new Error('Missing VITE_FIREBASE_API_KEY. Add it to a local .env file (not committed).')
+}
+
 // Storage bucket can differ between Firebase projects.
 // Newer Firebase projects commonly use "<projectId>.firebasestorage.app" (not ".appspot.com").
 // Allow override via Vite env so you can match exactly what Firebase Console shows.
@@ -22,7 +32,7 @@ const databaseURL = String(rawDatabaseURL).trim().replace(/\/+$/, '')
 
 // Firebase configuration
 const firebaseConfig = {
-    apiKey: 'AIzaSyDKgbMCB8SEwOMfP9SqgDOqeT4mCoTirw8',
+    apiKey,
     authDomain: 'rfid-self-checkout-system.firebaseapp.com',
     projectId,
     databaseURL,

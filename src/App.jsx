@@ -5,25 +5,28 @@ import { Routes, Route } from 'react-router-dom';
 import LoginPage from './pages/Login';
 import RegisterPage from './pages/Register';
 import StationLogin from './pages/StationLogin';
+import ForceReset from './pages/ForceReset';
 import AdminDashboard from './pages/AdminDashboard'; 
 import InventoryManagement from './pages/InventoryManagement';
 import CustomerCheckout from './pages/CustomerCheckout';
 import UserManagement from './pages/UserManagement'; 
+import MembershipManagement from './pages/MembershipManagement';
 import TransactionManagement from './pages/TransactionManagement';
 import StripeTransactions from './pages/StripeTransactions';
 import BillplzTransactions from './pages/BillplzTransactions';
 import TransactionDetails from './pages/TransactionDetails'
 import SoldItems from './pages/SoldItems'
+import DeletedSoldItems from './pages/DeletedSoldItems'
 import Logs from './pages/Logs';
 import ProductManagement from './pages/ProductManagement';
 import ProductMaster from './pages/ProductMaster';
 import TagUidLink from './pages/TagUidLink';
 import ProductItems from './pages/ProductItems';
 import FinancialReports from './pages/FinancialReports';
-import StaffAttendance from './pages/StaffAttendance';
-import LeaveManagement from './pages/LeaveManagement';
 import Profile from './pages/Profile';
+import PromoCodes from './pages/PromoCodes';
 import PublicReceipt from './pages/PublicReceipt';
+import PaymentResult from './pages/PaymentResult';
 import { Navigate } from 'react-router-dom';
 
 // Protected Route
@@ -47,6 +50,7 @@ const App = () => {
 
       {/* Public receipt (customer phone) */}
       <Route path="/r/:token" element={<PublicReceipt />} />
+      <Route path="/payment-result" element={<PaymentResult />} />
 
       {/* Customer Checkout */}
       <Route 
@@ -57,6 +61,9 @@ const App = () => {
           </KioskOrAuthRoute>
         } 
       />
+
+      {/* Force reset page for newly-created users */}
+      <Route path="/force-reset" element={<ForceReset />} />
 
       {/* Compatibility route (older layout used /profile) */}
       <Route path="/profile" element={<Navigate to="/admin/profile" replace />} />
@@ -79,16 +86,6 @@ const App = () => {
           <Route path="products/tags" element={<TagUidLink />} />
           <Route path="products/items" element={<ProductItems />} />
           <Route path="profile" element={<Profile />} />
-          <Route path="attendance" element={
-            <ProtectedRoute allowedRoles={['admin','manager','staff']}>
-              <StaffAttendance />
-            </ProtectedRoute>
-          } />
-          <Route path="leaves" element={
-            <ProtectedRoute allowedRoles={['admin','manager','staff']}>
-              <LeaveManagement />
-            </ProtectedRoute>
-          } />
           <Route path="reports" element={
             <ProtectedRoute allowedRoles={['admin','manager']}>
               <FinancialReports />
@@ -99,6 +96,11 @@ const App = () => {
           <Route path="transactions/billplz" element={<BillplzTransactions />} />
           <Route path="transactions/:txId" element={<TransactionDetails />} />
           <Route path="sold-items" element={<SoldItems />} />
+          <Route path="sold-items/deleted" element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <DeletedSoldItems />
+            </ProtectedRoute>
+          } />
           <Route path="stations" element={
             <ProtectedRoute allowedRoles={['admin','manager']}>
               <React.Suspense fallback={<div>Loading...</div>}>
@@ -114,6 +116,8 @@ const App = () => {
             </ProtectedRoute>
           } />
           <Route path="users" element={<UserManagement />} /> 
+          <Route path="memberships" element={<MembershipManagement />} />
+          <Route path="discounts" element={<PromoCodes />} />
           <Route path="logs" element={<Logs />} />
       </Route>
 

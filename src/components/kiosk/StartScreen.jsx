@@ -46,6 +46,14 @@ export default function StartScreen() {
     return () => { mounted = false }
   }, [stationId])
 
+  const welcomeFallback = 'Welcome to NAZ Retails\nClick the Start button to start'
+  const welcomeRaw = (kioskWelcomeMessage && kioskWelcomeMessage.trim().length > 0)
+    ? kioskWelcomeMessage.trim()
+    : welcomeFallback
+  const welcomeLines = welcomeRaw.split(/\r?\n/)
+  const welcomeTitle = welcomeLines[0] || 'Welcome'
+  const welcomeSubtitle = welcomeLines.slice(1).join('\n')
+
   return (
     <Box
       sx={{
@@ -58,23 +66,32 @@ export default function StartScreen() {
         justifyContent: 'center',
       }}
     >
-      {kioskWelcomeMessage ? (
+      <Typography
+        variant="h4"
+        sx={{
+          fontWeight: 900,
+          letterSpacing: 0.3,
+          mb: welcomeSubtitle ? 0.75 : 3.5,
+          textAlign: 'center',
+          whiteSpace: 'pre-line',
+        }}
+      >
+        {welcomeTitle}
+      </Typography>
+      {welcomeSubtitle ? (
         <Typography
+          variant="body2"
           sx={{
-            mb: 3.5,
-            color: 'text.primary',
-            fontWeight: 650,
-            fontSize: { xs: 24, sm: 30 },
-            lineHeight: 1.15,
-            maxWidth: 920,
+            opacity: 0.9,
+            fontStyle: 'italic',
+            textAlign: 'center',
             whiteSpace: 'pre-line',
+            mb: 3.5,
           }}
         >
-          {kioskWelcomeMessage}
+          {welcomeSubtitle}
         </Typography>
-      ) : (
-        <Box sx={{ mb: 3 }} />
-      )}
+      ) : null}
 
       {!stationId && (
         <TextField label="Station ID" value={temp} onChange={(e) => setTemp(e.target.value)} sx={{ mb: 3, maxWidth: 560 }} fullWidth />
@@ -84,7 +101,6 @@ export default function StartScreen() {
         <Button
           variant="contained"
           size="large"
-          color="error"
           onClick={() => start(temp || stationId)}
           disabled={!(temp || stationId)}
           sx={{
@@ -96,6 +112,9 @@ export default function StartScreen() {
             fontWeight: 900,
             letterSpacing: 0.5,
             borderRadius: 1,
+            backgroundColor: '#a259ff',
+            color: '#fff',
+            '&:hover': { backgroundColor: '#8b45e6' },
           }}
         >
           Start Checkout

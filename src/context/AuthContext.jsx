@@ -16,11 +16,24 @@ export const AuthProvider = ({ children }) => {
     const [currentUser, setCurrentUser] = useState(null); 
     const [currentRole, setCurrentRole] = useState(null); 
     const [blockedUntilMs, setBlockedUntilMs] = useState(0);
+    const [forcePasswordReset, setForcePasswordReset] = useState(false);
     const [loading, setLoading] = useState(true); 
 
     // Define logout here so it's scoped correctly
     const logout = () => {
         return auth.signOut();
+    };
+
+    const refreshCurrentUser = async () => {
+        try {
+            if (!auth.currentUser) return;
+            if (typeof auth.currentUser.reload === 'function') {
+                await auth.currentUser.reload();
+            }
+            setCurrentUser(auth.currentUser);
+        } catch (err) {
+            console.warn('[AuthContext] refreshCurrentUser failed', err);
+        }
     };
 
     useEffect(() => {
@@ -44,6 +57,10 @@ export const AuthProvider = ({ children }) => {
                         const role = typeof rawRole === 'string' ? rawRole.toLowerCase() : '';
                         console.debug('[AuthContext] fetched role from Firestore (normalized):', role);
                         setCurrentRole(role);
+
+                        // Load forcePasswordReset flag if present
+                        const rawForce = docSnap.data().forcePasswordReset;
+                        setForcePasswordReset(Boolean(rawForce));
 
                         // Temporary access block support
                         const rawBlockedUntil = docSnap.data().blockedUntil ?? docSnap.data().blocked_until ?? docSnap.data().blockedUntilAt ?? null;
@@ -85,9 +102,11 @@ export const AuthProvider = ({ children }) => {
     const value = {
         currentUser,
         currentRole,
+        forcePasswordReset,
         blockedUntilMs,
         loading,
         logout,
+        refreshCurrentUser,
     };
 
     // 4. Render the Provider, wrapping all child components

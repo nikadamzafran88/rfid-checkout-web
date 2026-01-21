@@ -111,10 +111,9 @@ const AdminLayout = () => {
     { path: '/admin', icon: Home, label: 'Dashboard' },
     { path: '/admin/users', icon: Users, label: 'Manage Users' },
     { path: '/admin/stations', icon: Settings, label: 'Stations' },
-    { path: '/admin/attendance', icon: ListOrdered, label: 'Staff Attendance' },
-    { path: '/admin/leaves', icon: FileText, label: 'Leave Requests' },
-    { path: '/admin/reports', icon: FileText, label: 'Financial Reports' },
-    { path: '/admin/products', icon: ShoppingCart, label: 'Product Management' },
+    { path: '/admin/discounts', icon: FileText, label: 'Discounts' },
+    { path: '/admin/reports', icon: FileText, label: 'Analytics Dashboard' },
+    { path: '/admin/products', icon: ShoppingCart, label: 'Products' },
     { path: '/admin/transactions', icon: ListOrdered, label: 'View Transactions' },
     { path: '/admin/inventory', icon: Package, label: 'Manage Inventory' },
     { path: '/admin/logs', icon: FileText, label: 'View Logs' },
@@ -148,7 +147,7 @@ const AdminLayout = () => {
         {/* LOGO AREA */}
         <Box sx={{ px: 2, py: 3, textAlign: 'center', borderBottom: `1px solid ${theme.palette.divider}` }}>
           <Typography variant="h6" sx={{ fontWeight: 700 }}>
-            M&M <Typography component="span" sx={{ fontWeight: 300 }}>RSCS</Typography>
+            NAZ <Typography component="span" sx={{ fontWeight: 300 }}>retails</Typography>
           </Typography>
         </Box>
 

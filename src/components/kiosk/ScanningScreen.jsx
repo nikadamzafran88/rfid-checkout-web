@@ -35,9 +35,12 @@ export default function ScanningScreen() {
     end,
   } = useTransaction()
 
+  const { membership } = useTransaction()
+
   const [autoCountdown, setAutoCountdown] = useState(0)
   const autoProceedRef = useRef(null)
   const [openCancelConfirm, setOpenCancelConfirm] = useState(false)
+  const [scanError, setScanError] = useState('')
 
   const [lastScannedPreview, setLastScannedPreview] = useState(null)
   const [showLastScannedPreview, setShowLastScannedPreview] = useState(false)
@@ -79,7 +82,7 @@ export default function ScanningScreen() {
     }
     lastScannedTimeoutRef.current = setTimeout(() => {
       setShowLastScannedPreview(false)
-    }, 3000)
+    }, 5500)
 
     const t = setTimeout(() => {
       try {
@@ -101,11 +104,26 @@ export default function ScanningScreen() {
     if (!stationId) return
     processedUidsRef.current = new Set()
 
+    // Flag to ignore initial listener values until paths are cleared
+    let isReady = false
+
     const normalizeUid = (v) => String(v || '').trim()
 
     const processUid = async (uidRaw, clearRef = null) => {
       const uid = normalizeUid(uidRaw)
       if (!uid) return
+
+      // Ignore scans until we've cleared stale data
+      if (!isReady) {
+        if (clearRef) {
+          try {
+            await rdbSet(clearRef, null)
+          } catch {
+            // ignore
+          }
+        }
+        return
+      }
 
       const alreadyInCart = cartRef.current.some(
         (it) => String(it?.uid || '').trim() === uid || String(it?.id || '') === `unknown_${uid}`
@@ -153,15 +171,54 @@ export default function ScanningScreen() {
               const prodSnap = await getDoc(doc(db, 'products', String(productId)))
               if (prodSnap.exists()) {
                 const data = prodSnap.data() || {}
-                addItem({
-                  id: prodSnap.id,
-                  uid,
-                  sku: data.sku || data.RFID_tag_UID || uid,
-                  name: data.name || `Product ${prodSnap.id}`,
-                  price: data.price || 0,
-                  image_url: data.image_url || '',
-                })
-                handled = true
+                // check sold UID marker first
+                try {
+                  const soldSnap = await getDoc(doc(db, 'soldRFIDs', uid))
+                  if (soldSnap.exists()) {
+                    const soldData = soldSnap.data() || {}
+                    const soldProduct = String(soldData.productId || '')
+                    if (soldProduct === String(prodSnap.id)) {
+                      setScanError('This RFID tag has already been sold with this item. Move the tag to another product to use it.')
+                      setTimeout(() => setScanError(''), 3500)
+                      handled = true
+                    }
+                  }
+                } catch (e) {
+                  // ignore sold marker check failures and continue to inventory check
+                }
+
+                // check inventory before adding to cart
+                try {
+                  const invRef = doc(db, 'inventory', prodSnap.id)
+                  const invSnap = await getDoc(invRef)
+                  const stock = invSnap.exists() ? Number(invSnap.data()?.stockLevel ?? 0) || 0 : 0
+                  if (stock <= 0) {
+                    setScanError('This item appears to be out of stock / already sold.')
+                    setTimeout(() => setScanError(''), 3500)
+                    handled = true
+                  } else {
+                    addItem({
+                      id: prodSnap.id,
+                      uid,
+                      sku: data.sku || data.RFID_tag_UID || uid,
+                      name: data.name || `Product ${prodSnap.id}`,
+                      price: data.price || 0,
+                      image_url: data.image_url || '',
+                    })
+                    handled = true
+                  }
+                } catch (e) {
+                  console.warn('inventory check failed', e)
+                  addItem({
+                    id: prodSnap.id,
+                    uid,
+                    sku: data.sku || data.RFID_tag_UID || uid,
+                    name: data.name || `Product ${prodSnap.id}`,
+                    price: data.price || 0,
+                    image_url: data.image_url || '',
+                  })
+                  handled = true
+                }
               }
             }
           } catch {
@@ -177,19 +234,60 @@ export default function ScanningScreen() {
         if (!handled && !docs.empty) {
           const d = docs.docs[0]
           const data = d.data() || {}
-          addItem({
-            id: d.id,
-            uid,
-            sku: data.sku || data.RFID_tag_UID || uid,
-            name: data.name,
-            price: data.price || 0,
-            image_url: data.image_url || '',
-          })
-          handled = true
+          try {
+            // check sold UID marker first
+            try {
+              const soldSnap2 = await getDoc(doc(db, 'soldRFIDs', uid))
+              if (soldSnap2.exists()) {
+                const soldData2 = soldSnap2.data() || {}
+                const soldProduct2 = String(soldData2.productId || '')
+                if (soldProduct2 === String(d.id)) {
+                  setScanError('This RFID tag has already been sold with this item. Move the tag to another product to use it.')
+                  setTimeout(() => setScanError(''), 3500)
+                  handled = true
+                }
+              }
+            } catch (e) {
+              // ignore
+            }
+
+            const invRef = doc(db, 'inventory', d.id)
+            const invSnap = await getDoc(invRef)
+            const stock = invSnap.exists() ? Number(invSnap.data()?.stockLevel ?? 0) || 0 : 0
+            if (stock <= 0) {
+              setScanError('This item appears to be out of stock / already sold.')
+              setTimeout(() => setScanError(''), 3500)
+              handled = true
+            } else {
+              addItem({
+                id: d.id,
+                uid,
+                sku: data.sku || data.RFID_tag_UID || uid,
+                name: data.name,
+                price: data.price || 0,
+                image_url: data.image_url || '',
+              })
+              handled = true
+            }
+          } catch (e) {
+            console.warn('inventory check failed', e)
+            addItem({
+              id: d.id,
+              uid,
+              sku: data.sku || data.RFID_tag_UID || uid,
+              name: data.name,
+              price: data.price || 0,
+              image_url: data.image_url || '',
+            })
+            handled = true
+          }
         }
 
         if (!handled) {
-          addItem({ id: `unknown_${uid}`, uid, sku: uid, name: `Unknown (${uid})`, price: 0 })
+          // If UID isn't mapped to any product, show a clear message and do not add to cart.
+          setScanError('This RFID tag is not registered to any product.')
+          setTimeout(() => setScanError(''), 3500)
+          handled = true
         }
       } catch (err) {
         console.error('lookup error', err)
@@ -203,6 +301,24 @@ export default function ScanningScreen() {
         }
       }
     }
+
+    // Render scan error alert briefly (inside effect's scope we can't render, so expose state)
+
+    // Clear stale scan paths first, then enable processing
+    const clearAndEnable = async () => {
+      try {
+        await rdbSet(rdbRef(rtdb, 'system/last_scanned_uid'), null)
+      } catch { /* ignore */ }
+      try {
+        await rdbSet(rdbRef(rtdb, `stations/${stationId}/current_scan`), null)
+      } catch { /* ignore */ }
+      try {
+        await rdbSet(rdbRef(rtdb, `checkout_cart/${stationId}/scanned_items`), null)
+      } catch { /* ignore */ }
+      // Now ready to process new scans
+      isReady = true
+    }
+    clearAndEnable()
 
     const legacyPath = `stations/${stationId}/current_scan`
     const legacyRef = rdbRef(rtdb, legacyPath)
@@ -287,7 +403,7 @@ export default function ScanningScreen() {
       return
     }
 
-    let seconds = 12
+    let seconds = 15
     setAutoCountdown(seconds)
 
     if (autoProceedRef.current) clearInterval(autoProceedRef.current)
@@ -330,66 +446,87 @@ export default function ScanningScreen() {
       >
         {/* Left: scan instructions */}
         <Box>
-          {autoCountdown > 0 ? (
-            <Alert severity="info" sx={{ mb: 1.25 }}>
-              Auto-proceeding to payment in <strong>{autoCountdown}s</strong>
+          {/* Auto-proceed alert moved under the Proceed button */}
+
+          {scanError ? (
+            <Alert severity="error" sx={{ mb: 1.25 }}>
+              {scanError}
             </Alert>
+          ) : null}
+
+          {membership && membership.name ? (
+            <>
+              <Typography sx={{ fontWeight: 800, mb: 0.25, color: '#a259ff', fontSize: '1.25rem' }}>{`Hello ${membership.name}`}</Typography>
+              {typeof membership.points === 'number' ? (
+                <Typography variant="body2" sx={{ color: 'text.secondary', mb: 1.25 }}>
+                  {`Points: ${membership.points}`}
+                </Typography>
+              ) : null}
+            </>
           ) : null}
 
           {showLastScannedPreview && lastScannedPreview ? (
             <Paper sx={{ p: 2, border: '1px solid', borderColor: 'divider' }}>
               <Typography sx={{ fontWeight: 900, mb: 1 }}>Item scanned</Typography>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
                 {lastScannedPreview.image_url ? (
                   <Box
                     component="img"
                     src={lastScannedPreview.image_url}
                     alt={lastScannedPreview.name}
                     sx={{
-                      width: 88,
-                      height: 88,
-                      borderRadius: 1,
+                      width: { xs: 160, md: 220 },
+                      height: { xs: 160, md: 220 },
+                      borderRadius: 2,
                       objectFit: 'cover',
-                      border: '1px solid',
+                      border: '2px solid',
                       borderColor: 'divider',
-                      flex: '0 0 auto',
+                      
                     }}
                   />
                 ) : (
                   <Box
                     sx={{
-                      width: 88,
-                      height: 88,
-                      borderRadius: 1,
-                      border: '1px dashed',
+                      width: { xs: 160, md: 220 },
+                      height: { xs: 160, md: 220 },
+                      borderRadius: 2,
+                      border: '2px dashed',
                       borderColor: 'divider',
-                      flex: '0 0 auto',
+                      display: 'block',
                     }}
                   />
                 )}
 
-                <Box sx={{ minWidth: 0, flex: '1 1 auto' }}>
-                  <Typography sx={{ fontWeight: 900 }} noWrap>
-                    {lastScannedPreview.name || 'Item'}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" noWrap>
+                <Box sx={{ textAlign: 'center', width: '100%' }}>
+                  <Typography sx={{ fontWeight: 900 }}>{lastScannedPreview.name || 'Item'}</Typography>
+                  <Typography variant="body2" color="text.secondary">
                     {lastScannedPreview.sku
                       ? `SKU: ${lastScannedPreview.sku}`
                       : lastScannedPreview.uid
                         ? `UID: ${lastScannedPreview.uid}`
                         : ''}
                   </Typography>
+                  <Typography sx={{ fontWeight: 950, fontSize: 20, mt: 0.5 }}>
+                    ${(lastScannedPreview.price || 0).toFixed(2)}
+                  </Typography>
                 </Box>
-
-                <Typography sx={{ fontWeight: 950, fontSize: 24, whiteSpace: 'nowrap' }}>
-                  ${(lastScannedPreview.price || 0).toFixed(2)}
-                </Typography>
               </Box>
             </Paper>
           ) : (
             <Paper sx={{ p: 2, border: '1px solid', borderColor: 'divider' }}>
               <Typography sx={{ fontWeight: 900, mb: 0.25 }}>Ready to scan</Typography>
-              <Typography variant="body2" color="text.secondary">
+              <Box sx={{ display: 'flex', justifyContent: 'center', mt: 1 }}>
+                <Box
+                  sx={{
+                    width: { xs: 160, md: 220 },
+                    height: { xs: 160, md: 220 },
+                    borderRadius: 2,
+                    border: '2px dashed',
+                    borderColor: 'divider',
+                  }}
+                />
+              </Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
                 Scan item tags to add them to the cart.
               </Typography>
             </Paper>
@@ -439,7 +576,7 @@ export default function ScanningScreen() {
               <path d="M8 15h8" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
             </Box>
             <Typography variant="body2" sx={{ fontWeight: 800 }}>
-              Put your item in bin to scan together
+              Scan your item to the scanner and put the scanned item into the bag
             </Typography>
           </Paper>
 
@@ -457,14 +594,20 @@ export default function ScanningScreen() {
             }}
           >
             <Button
-              color="error"
               variant="outlined"
               onClick={() => {
                 clearCart()
                 setAutoCountdown(0)
               }}
               disabled={cart.length === 0}
-              sx={{ py: 1.25, fontWeight: 800, minWidth: 120 }}
+              sx={{
+                py: 1.25,
+                fontWeight: 800,
+                minWidth: 120,
+                borderColor: '#a259ff',
+                color: '#a259ff',
+                '&:hover': { borderColor: '#8b45e6', backgroundColor: 'rgba(162,89,255,0.04)' },
+              }}
             >
               Clear
             </Button>
@@ -592,20 +735,29 @@ export default function ScanningScreen() {
                 onClick={() => setStep('PAYMENT')}
                 disabled={cart.length === 0}
                 fullWidth
-                sx={{ py: 1.1, fontWeight: 900 }}
+                sx={{ py: 1.1, fontWeight: 900, backgroundColor: '#a259ff', color: '#fff', '&:hover': { backgroundColor: '#8b45e6' } }}
               >
                 Proceed to Payment
               </Button>
+              {autoCountdown > 0 ? (
+                <Alert severity="info" sx={{ mt: 1 }}>
+                  Auto-proceeding to payment in <strong>{autoCountdown}s</strong>
+                </Alert>
+              ) : null}
             </Box>
           </Paper>
         </Box>
       </Box>
 
-      <Dialog
-        open={openCancelConfirm}
-        onClose={() => setOpenCancelConfirm(false)}
-        aria-labelledby="cancel-tx-dialog-title"
-      >
+          <Dialog
+            open={openCancelConfirm}
+            onClose={() => setOpenCancelConfirm(false)}
+            aria-labelledby="cancel-tx-dialog-title"
+            // Ensure the dialog is rendered inside the fullscreen element so it appears
+            // without exiting browser fullscreen mode.
+            container={() => document.fullscreenElement || document.body}
+            disablePortal
+          >
         <DialogTitle id="cancel-tx-dialog-title">Cancel Transaction?</DialogTitle>
         <DialogContent>
           <DialogContentText>
@@ -613,23 +765,28 @@ export default function ScanningScreen() {
           </DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setOpenCancelConfirm(false)}>No, keep it</Button>
-          <Button
-            color="error"
-            onClick={() => {
-              try {
-                end()
-              } catch {
-                clearCart()
-                setStep('IDLE')
-              }
-              setAutoCountdown(0)
-              setOpenCancelConfirm(false)
-            }}
-            autoFocus
-          >
-            Yes, cancel
-          </Button>
+              <Button
+                onClick={() => setOpenCancelConfirm(false)}
+                sx={{ color: '#fff', backgroundColor: '#a259ff', '&:hover': { backgroundColor: '#8b45e6' } }}
+              >
+                No, keep it
+              </Button>
+              <Button
+                color="error"
+                onClick={() => {
+                  try {
+                    end()
+                  } catch {
+                    clearCart()
+                    setStep('IDLE')
+                  }
+                  setAutoCountdown(0)
+                  setOpenCancelConfirm(false)
+                }}
+                autoFocus
+              >
+                Yes, cancel
+              </Button>
         </DialogActions>
       </Dialog>
     </Box>

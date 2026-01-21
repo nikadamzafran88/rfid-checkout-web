@@ -12,9 +12,11 @@ import {
   updateDoc,
   deleteDoc,
   setDoc,
+  writeBatch,
   serverTimestamp,
 } from 'firebase/firestore';
 import { getDownloadURL, ref as storageRef, uploadBytesResumable } from 'firebase/storage';
+import * as XLSX from 'xlsx';
 import {
   Box,
   Typography,
@@ -114,11 +116,289 @@ const ProductMaster = () => {
   const newFileInputRef = useRef(null);
   const editFileInputRef = useRef(null);
 
+  const bulkFileInputRef = useRef(null);
+  const [bulkFile, setBulkFile] = useState(null);
+  const [bulkRows, setBulkRows] = useState([]); // [{ rowNumber, id, name, brand, gender, color, price, cost, category, image_url, errors: [] }]
+  const [bulkParseError, setBulkParseError] = useState('');
+  const [bulkImporting, setBulkImporting] = useState(false);
+  const [bulkImportedCount, setBulkImportedCount] = useState(0);
+
   const [newImagePreviewUrl, setNewImagePreviewUrl] = useState('');
   const [editImagePreviewUrl, setEditImagePreviewUrl] = useState('');
   const [newDropActive, setNewDropActive] = useState(false);
 
   const productsCollectionRef = collection(db, 'products');
+
+  const normalizeHeaderKey = (k) => String(k || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[_-]+/g, '');
+
+  const parseCsvText = (text) => {
+    const s = String(text || '');
+    const rows = [];
+    let row = [];
+    let field = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < s.length; i += 1) {
+      const c = s[i];
+
+      if (inQuotes) {
+        if (c === '"') {
+          const next = s[i + 1];
+          if (next === '"') {
+            field += '"';
+            i += 1;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          field += c;
+        }
+        continue;
+      }
+
+      if (c === '"') {
+        inQuotes = true;
+        continue;
+      }
+
+      if (c === ',') {
+        row.push(field);
+        field = '';
+        continue;
+      }
+
+      if (c === '\n') {
+        row.push(field);
+        field = '';
+        // Trim trailing \r from Windows line endings
+        row = row.map((v) => (typeof v === 'string' ? v.replace(/\r$/, '') : v));
+        // Skip fully-empty lines
+        if (row.some((v) => String(v || '').trim() !== '')) rows.push(row);
+        row = [];
+        continue;
+      }
+
+      field += c;
+    }
+
+    // Last field
+    row.push(field);
+    row = row.map((v) => (typeof v === 'string' ? v.replace(/\r$/, '') : v));
+    if (row.some((v) => String(v || '').trim() !== '')) rows.push(row);
+    return rows;
+  };
+
+  const coerceNumber = (v) => {
+    const n = Number(String(v ?? '').trim());
+    return Number.isFinite(n) ? n : NaN;
+  };
+
+  const mapRowToProduct = (obj, rowNumber) => {
+    const get = (keyVariants) => {
+      for (const k of keyVariants) {
+        const nk = normalizeHeaderKey(k);
+        if (Object.prototype.hasOwnProperty.call(obj, nk)) return obj[nk];
+      }
+      return '';
+    };
+
+    const idRaw = get(['id', 'productid', 'product_id']);
+    const nameRaw = get(['name', 'productname', 'product_name']);
+    const brandRaw = get(['brand']);
+    const genderRaw = get(['gender']);
+    const colorRaw = get(['color']);
+    const categoryRaw = get(['category']);
+    const priceRaw = get(['price', 'unitprice', 'unit_price']);
+    const costRaw = get(['cost', 'costprice', 'cost_price']);
+    const imageRaw = get(['image_url', 'imageurl', 'image', 'imageUrl']);
+
+    const price = coerceNumber(priceRaw);
+    const cost = coerceNumber(costRaw);
+
+    const row = {
+      rowNumber,
+      id: String(idRaw || '').trim(),
+      name: String(nameRaw || '').trim(),
+      brand: String(brandRaw || '').trim(),
+      gender: String(genderRaw || 'Unisex').trim() || 'Unisex',
+      color: String(colorRaw || '').trim(),
+      category: String(categoryRaw || '').trim(),
+      price,
+      cost,
+      image_url: String(imageRaw || '').trim(),
+      errors: [],
+    };
+
+    if (!row.name) row.errors.push('Missing name');
+    if (!Number.isFinite(row.price) || row.price <= 0) row.errors.push('Invalid price (must be > 0)');
+    if (!Number.isFinite(row.cost) || row.cost < 0) row.errors.push('Invalid cost (must be >= 0)');
+
+    return row;
+  };
+
+  const parseBulkFile = async (file) => {
+    setBulkParseError('');
+    setBulkRows([]);
+    setBulkImportedCount(0);
+
+    if (!file) return;
+    const name = String(file.name || '').toLowerCase();
+
+    try {
+      let objects = [];
+
+      if (name.endsWith('.csv')) {
+        const text = await file.text();
+        const table = parseCsvText(text);
+        if (!table || table.length < 2) {
+          setBulkParseError('CSV must have a header row and at least 1 data row.');
+          return;
+        }
+
+        const header = table[0].map((h) => normalizeHeaderKey(h));
+        objects = table.slice(1).map((cells) => {
+          const o = {};
+          header.forEach((h, idx) => { o[h] = cells[idx] ?? ''; });
+          return o;
+        });
+      } else if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: 'array' });
+        const sheetName = wb.SheetNames && wb.SheetNames[0] ? wb.SheetNames[0] : null;
+        if (!sheetName) {
+          setBulkParseError('Excel file has no sheets.');
+          return;
+        }
+        const sheet = wb.Sheets[sheetName];
+        const raw = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+        objects = raw.map((r) => {
+          const o = {};
+          Object.entries(r || {}).forEach(([k, v]) => { o[normalizeHeaderKey(k)] = v; });
+          return o;
+        });
+      } else {
+        setBulkParseError('Unsupported file type. Please upload a .csv, .xlsx, or .xls file.');
+        return;
+      }
+
+      if (!objects.length) {
+        setBulkParseError('No rows found in file.');
+        return;
+      }
+
+      const rows = objects.map((obj, idx) => mapRowToProduct(obj, idx + 2));
+      setBulkRows(rows);
+    } catch (err) {
+      console.error('Failed to parse bulk import file', err);
+      setBulkParseError(`Failed to parse file. ${err?.message || ''}`.trim());
+    }
+  };
+
+  const downloadBulkTemplate = () => {
+    const headers = ['id', 'name', 'brand', 'gender', 'color', 'price', 'cost', 'category', 'image_url'];
+    const example = ['', 'Basic Tee', 'M&M', 'Unisex', 'Black', '29.90', '10.00', 'T-Shirts', ''];
+    const csv = `${headers.join(',')}\n${example.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')}\n`;
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'product_master_import_template.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => {
+      try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+    }, 0);
+  };
+
+  const validBulkRows = useMemo(() => bulkRows.filter((r) => (r.errors || []).length === 0), [bulkRows]);
+  const invalidBulkRows = useMemo(() => bulkRows.filter((r) => (r.errors || []).length > 0), [bulkRows]);
+
+  const runBulkImport = async () => {
+    if (bulkImporting) return;
+    if (!validBulkRows.length) return;
+
+    const ok = window.confirm(`Import ${validBulkRows.length} product(s)?`);
+    if (!ok) return;
+
+    setBulkImporting(true);
+    setBulkImportedCount(0);
+    setError(null);
+
+    try {
+      // Firestore writeBatch limit is 500 ops.
+      // We do 2 ops per row (product + inventory) => 250 rows per batch.
+      const chunkSize = 250;
+      for (let i = 0; i < validBulkRows.length; i += chunkSize) {
+        const chunk = validBulkRows.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+
+        chunk.forEach((r) => {
+          const hasId = Boolean(String(r.id || '').trim());
+          const productRef = hasId ? doc(db, 'products', String(r.id).trim()) : doc(collection(db, 'products'));
+          const productId = productRef.id;
+
+          const productData = {
+            name: r.name,
+            brand: r.brand,
+            gender: r.gender || 'Unisex',
+            color: r.color,
+            price: Number(r.price),
+            cost: Number(r.cost),
+            category: r.category,
+            image_url: r.image_url,
+            ...(hasId ? { updatedAt: new Date().toISOString() } : { createdAt: new Date().toISOString() }),
+          };
+
+          batch.set(productRef, productData, { merge: hasId });
+
+          batch.set(
+            doc(db, 'inventory', productId),
+            {
+              productID: productId,
+              stockLevel: 0,
+              lastUpdated: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        });
+
+        await batch.commit();
+        setBulkImportedCount((prev) => prev + chunk.length);
+      }
+
+      await fetchProducts();
+      await logAction(db, {
+        type: 'product_bulk_import',
+        source: 'ProductMaster',
+        actorUID: currentUser?.uid || null,
+        actorRole: currentRole || null,
+        targetType: 'product',
+        message: `Bulk imported ${validBulkRows.length} products`,
+        metadata: {
+          totalRows: bulkRows.length,
+          imported: validBulkRows.length,
+          rejected: invalidBulkRows.length,
+        },
+      });
+
+      setBulkFile(null);
+      setBulkRows([]);
+      setBulkParseError('');
+      if (bulkFileInputRef.current) bulkFileInputRef.current.value = '';
+      alert('Bulk import completed.');
+    } catch (err) {
+      console.error('Bulk import failed', err);
+      const code = err?.code ? ` (${err.code})` : '';
+      setError(`Bulk import failed.${code} ${err?.message || ''}`.trim());
+    } finally {
+      setBulkImporting(false);
+    }
+  };
 
   const categories = useMemo(() => {
     const map = new Map();
@@ -948,6 +1228,131 @@ const ProductMaster = () => {
               {uploadingNewImage ? 'Uploading…' : 'Publish Product'}
             </Button>
           </Box>
+        </Box>
+      </SectionCard>
+
+      <SectionCard
+        title="Bulk Import (CSV / Excel)"
+        subtitle="Upload a CSV/XLSX file to add products in bulk."
+        sx={{ p: { xs: 2, md: 2 } }}
+      >
+        <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap', mb: 2 }}>
+          <Button variant="outlined" onClick={downloadBulkTemplate} disabled={bulkImporting}>
+            Download template
+          </Button>
+
+          <Button variant="contained" component="label" disabled={bulkImporting}>
+            Choose file
+            <input
+              ref={bulkFileInputRef}
+              hidden
+              type="file"
+              accept=".csv,.xlsx,.xls"
+              onChange={async (e) => {
+                const f = e.target.files && e.target.files[0] ? e.target.files[0] : null;
+                setBulkFile(f);
+                await parseBulkFile(f);
+              }}
+            />
+          </Button>
+
+          <Typography variant="body2" color="text.secondary" sx={{ flex: 1, minWidth: 220 }}>
+            Columns: id (optional), name, brand, gender, color, price, cost, category, image_url
+          </Typography>
+        </Box>
+
+        {bulkFile ? (
+          <Typography variant="body2" sx={{ mb: 1.5 }}>
+            File: <strong>{bulkFile.name}</strong>
+          </Typography>
+        ) : null}
+
+        {bulkParseError ? (
+          <Alert severity="error" sx={{ mb: 2 }}>
+            {bulkParseError}
+          </Alert>
+        ) : null}
+
+        {bulkRows.length ? (
+          <Box sx={{ mb: 2 }}>
+            <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap', mb: 1 }}>
+              <Chip label={`Rows: ${bulkRows.length}`} />
+              <Chip color="success" label={`Valid: ${validBulkRows.length}`} />
+              <Chip color="warning" label={`Invalid: ${invalidBulkRows.length}`} />
+              {bulkImporting ? (
+                <Chip color="info" label={`Imported: ${bulkImportedCount}/${validBulkRows.length}`} />
+              ) : null}
+            </Box>
+
+            <TableContainer sx={{ maxHeight: 360, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+              <Table stickyHeader size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Row</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>ID</TableCell>
+                    <TableCell>Name</TableCell>
+                    <TableCell>Category</TableCell>
+                    <TableCell>Price</TableCell>
+                    <TableCell>Cost</TableCell>
+                    <TableCell>Errors</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {bulkRows.slice(0, 50).map((r) => {
+                    const ok = (r.errors || []).length === 0;
+                    return (
+                      <TableRow key={r.rowNumber} hover>
+                        <TableCell sx={{ fontFamily: 'monospace' }}>{r.rowNumber}</TableCell>
+                        <TableCell>
+                          <Chip size="small" color={ok ? 'success' : 'warning'} label={ok ? 'OK' : 'Invalid'} />
+                        </TableCell>
+                        <TableCell sx={{ fontFamily: 'monospace' }}>{r.id || '—'}</TableCell>
+                        <TableCell>{r.name || '—'}</TableCell>
+                        <TableCell>{r.category || '—'}</TableCell>
+                        <TableCell>{Number.isFinite(r.price) ? `RM${Number(r.price).toFixed(2)}` : '—'}</TableCell>
+                        <TableCell>{Number.isFinite(r.cost) ? `RM${Number(r.cost).toFixed(2)}` : '—'}</TableCell>
+                        <TableCell>
+                          <Typography variant="caption" color={ok ? 'text.secondary' : 'error.main'}>
+                            {(r.errors || []).join('; ') || '—'}
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+
+            {bulkRows.length > 50 ? (
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                Showing first 50 rows only.
+              </Typography>
+            ) : null}
+          </Box>
+        ) : null}
+
+        <Box sx={{ display: 'flex', gap: 1.5, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+          <Button
+            variant="outlined"
+            onClick={() => {
+              setBulkFile(null);
+              setBulkRows([]);
+              setBulkParseError('');
+              setBulkImportedCount(0);
+              if (bulkFileInputRef.current) bulkFileInputRef.current.value = '';
+            }}
+            disabled={bulkImporting}
+          >
+            Clear
+          </Button>
+          <Button
+            variant="contained"
+            onClick={runBulkImport}
+            disabled={bulkImporting || validBulkRows.length === 0}
+          >
+            {bulkImporting ? 'Importing…' : `Import ${validBulkRows.length || 0} Products`}
+          </Button>
         </Box>
       </SectionCard>
 

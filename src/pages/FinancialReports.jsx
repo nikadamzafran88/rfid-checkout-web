@@ -1326,7 +1326,7 @@ const FinancialReports = () => {
         <Box sx={{ display: 'flex', alignItems: { xs: 'flex-start', md: 'center' }, justifyContent: 'space-between', gap: 1.5, mb: 1.5 }}>
           <Box>
             <Typography variant="subtitle1" sx={{ fontWeight: 900, letterSpacing: 0.6, textTransform: 'uppercase' }}>
-              Financial Dashboard
+              Analytics Dashboard
             </Typography>
             <Typography variant="caption" color="text.secondary">
               KPI overview • {fromDate || 'All time'} {toDate ? `→ ${toDate}` : ''}{prevRange ? ` • Prev: ${prevRange.fromDate} → ${prevRange.toDate}` : ''}

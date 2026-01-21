@@ -30,6 +30,8 @@ const RegisterPage = () => {
                 fullName: fullName,
                 role: 'customer', // Default role for a self-registered user
                 registeredAt: new Date().toISOString(),
+                // Force newly created users to set a new password on first login
+                forcePasswordReset: true,
             });
 
             console.log('User Registered Successfully and profile created in Firestore.');

@@ -91,7 +91,10 @@ export default function StationLogin() {
                 Kiosk Mode
               </Typography>
               <Typography variant="h4" sx={{ fontWeight: 900, mt: 0.5, lineHeight: 1.1 }}>
-                Station Check-in
+                NAZ RETAILS
+                <Box component="span" sx={{ display: 'block' }}>
+                  Self-Check Out Kiosk
+                </Box>
               </Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mt: 1, maxWidth: 360 }}>
                 Enter station credentials to open kiosk mode for customer checkout.

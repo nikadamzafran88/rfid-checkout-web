@@ -30,15 +30,17 @@ const AdminDashboard = () => {
     const theme = useTheme();
     const { currentRole, currentUser } = useAuth();
 
+    const welcomeName = useMemo(() => {
+        const u = currentUser;
+        if (!u) return '';
+        const name = u.displayName || u.fullName || u.name || u.email || '';
+        return String(name || '').trim();
+    }, [currentUser]);
+
     const [recentTransactions, setRecentTransactions] = useState([]);
     const [executiveSalesPayload, setExecutiveSalesPayload] = useState(null);
     const [loading, setLoading] = useState(true);
     const [lowStockPreview, setLowStockPreview] = useState([]);
-    const [leaveRequests, setLeaveRequests] = useState([]);
-    const [calendarMonthKey, setCalendarMonthKey] = useState(() => new Date().toISOString().slice(0, 7));
-    const [selectedDateKey, setSelectedDateKey] = useState(() => new Date().toISOString().slice(0, 10));
-    const [calendarLoading, setCalendarLoading] = useState(false);
-    const [calendarError, setCalendarError] = useState('');
     const [metricCounts, setMetricCounts] = useState({
         totalItems: 0,
         totalUsers: 0,
@@ -152,50 +154,6 @@ const AdminDashboard = () => {
             }
         });
         return out;
-    };
-
-    const addMonthsKey = (monthKey, delta) => {
-        if (!monthKey) return new Date().toISOString().slice(0, 7);
-        const d = new Date(`${monthKey}-01T00:00:00.000Z`);
-        if (Number.isNaN(d.getTime())) return new Date().toISOString().slice(0, 7);
-        d.setUTCMonth(d.getUTCMonth() + delta);
-        return d.toISOString().slice(0, 7);
-    };
-
-    const monthLabel = (monthKey) => {
-        try {
-            const d = new Date(`${monthKey}-01T00:00:00.000Z`);
-            return new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(d);
-        } catch {
-            return monthKey;
-        }
-    };
-
-    const buildMonthCells = (monthKey) => {
-        const base = new Date(`${monthKey}-01T00:00:00.000Z`);
-        if (Number.isNaN(base.getTime())) return [];
-        const y = base.getUTCFullYear();
-        const m = base.getUTCMonth();
-        const first = new Date(Date.UTC(y, m, 1));
-        const firstDow = first.getUTCDay(); // 0=Sun..6=Sat
-        const offset = (firstDow + 6) % 7; // Monday-start
-        const start = new Date(Date.UTC(y, m, 1 - offset));
-
-        const cells = [];
-        for (let i = 0; i < 42; i += 1) {
-            const d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate() + i));
-            const key = d.toISOString().slice(0, 10);
-            const inMonth = key.slice(0, 7) === monthKey;
-            cells.push({ key, day: d.getUTCDate(), inMonth });
-        }
-        return cells;
-    };
-
-    const coversDate = (evt, dateKey) => {
-        const s = String(evt?.startDate || '').trim();
-        const e = String(evt?.endDate || '').trim();
-        if (!s || !e || !dateKey) return false;
-        return s <= dateKey && dateKey <= e;
     };
 
     const buildExecutiveSalesPayload = (txList) => {
@@ -465,60 +423,6 @@ const AdminDashboard = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    useEffect(() => {
-        const loadLeaveRequests = async () => {
-            setCalendarError('');
-            setCalendarLoading(true);
-            try {
-                const leaveCol = collection(db, 'leave_requests');
-                let list = [];
-
-                if (currentRole === 'admin' || currentRole === 'manager') {
-                    const snap = await getDocs(leaveCol);
-                    list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-
-                    const uids = Array.from(new Set(list.map((r) => r.userUID).filter(Boolean)));
-                    const nameMap = {};
-                    await Promise.all(
-                        uids.map(async (uid) => {
-                            try {
-                                const userSnap = await getDoc(doc(db, 'users', uid));
-                                if (userSnap.exists()) {
-                                    const data = userSnap.data() || {};
-                                    nameMap[uid] = data.fullName || data.displayName || data.name || data.email || uid;
-                                } else {
-                                    nameMap[uid] = uid;
-                                }
-                            } catch {
-                                nameMap[uid] = uid;
-                            }
-                        })
-                    );
-
-                    list = list.map((r) => ({
-                        ...r,
-                        displayName: r.displayName || r.requesterDisplayName || nameMap[r.userUID] || r.userUID || 'Unknown',
-                    }));
-                } else if (currentUser) {
-                    const q = query(leaveCol, where('userUID', '==', currentUser.uid));
-                    const snap = await getDocs(q);
-                    const meName = currentUser.displayName || currentUser.fullName || currentUser.email || currentUser.uid;
-                    list = snap.docs.map((d) => ({ id: d.id, ...d.data(), displayName: meName }));
-                }
-
-                setLeaveRequests(list);
-            } catch (e) {
-                console.error('Failed to load leave_requests for calendar', e);
-                setCalendarError('Failed to load calendar.');
-                setLeaveRequests([]);
-            } finally {
-                setCalendarLoading(false);
-            }
-        };
-
-        loadLeaveRequests();
-    }, [currentRole, currentUser]);
-
     const executivePayloadWithInventory = useMemo(() => {
         if (!executiveSalesPayload || typeof executiveSalesPayload !== 'object') return executiveSalesPayload;
         const lowStock = Array.isArray(lowStockPreview)
@@ -574,27 +478,12 @@ const AdminDashboard = () => {
         [navigate]
     );
 
-    const calendarCells = useMemo(() => buildMonthCells(calendarMonthKey), [calendarMonthKey]);
-    const selectedEvents = useMemo(
-        () => leaveRequests.filter((r) => coversDate(r, selectedDateKey)),
-        [leaveRequests, selectedDateKey]
-    );
-    const countByDate = useMemo(() => {
-        const map = {};
-        // Only count within visible month grid for speed/clarity.
-        const keys = new Set(calendarCells.map((c) => c.key));
-        leaveRequests.forEach((r) => {
-            keys.forEach((k) => {
-                if (!coversDate(r, k)) return;
-                map[k] = (map[k] || 0) + 1;
-            });
-        });
-        return map;
-    }, [leaveRequests, calendarCells]);
-
     return (
         <Box sx={{ p: 3, '& > :not(style) + :not(style)': { mt: 3 } }}>
-            <PageHeader title="Dashboard" subtitle="Overview of users, inventory, and transactions." />
+            <PageHeader
+                title={welcomeName ? `Welcome, ${welcomeName}` : 'Welcome'}
+                subtitle="Overview of users, inventory, and transactions."
+            />
 
             <Grid container spacing={4}>
                 <Grid item xs={12} sm={6} md={3}>
@@ -792,154 +681,6 @@ const AdminDashboard = () => {
                                     );
                                 })}
                             </Box>
-                        </SectionCard>
-
-                        <SectionCard title="Calendar" subtitle="Month view (leave requests).">
-                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 1.5 }}>
-                                <Button
-                                    size="small"
-                                    variant="outlined"
-                                    onClick={() => setCalendarMonthKey((k) => addMonthsKey(k, -1))}
-                                    sx={{ textTransform: 'none' }}
-                                >
-                                    Prev
-                                </Button>
-
-                                <Typography sx={{ fontWeight: 700 }}>{monthLabel(calendarMonthKey)}</Typography>
-
-                                <Button
-                                    size="small"
-                                    variant="outlined"
-                                    onClick={() => setCalendarMonthKey((k) => addMonthsKey(k, 1))}
-                                    sx={{ textTransform: 'none' }}
-                                >
-                                    Next
-                                </Button>
-                            </Box>
-
-                            {calendarError ? (
-                                <Typography variant="body2" color="error.main" sx={{ mb: 1 }}>
-                                    {calendarError}
-                                </Typography>
-                            ) : null}
-
-                            {calendarLoading ? (
-                                <Typography variant="body2" color="text.secondary">Loading calendar…</Typography>
-                            ) : (
-                                <>
-                                    <Box
-                                        sx={{
-                                            display: 'grid',
-                                            gridTemplateColumns: 'repeat(7, 1fr)',
-                                            gap: 0.75,
-                                            mb: 1,
-                                        }}
-                                    >
-                                        {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => (
-                                            <Typography key={d} variant="caption" color="text.secondary" sx={{ textAlign: 'center', fontWeight: 700 }}>
-                                                {d}
-                                            </Typography>
-                                        ))}
-
-                                        {calendarCells.map((cell) => {
-                                            const count = Number(countByDate[cell.key] || 0) || 0;
-                                            const selected = cell.key === selectedDateKey;
-                                            const muted = !cell.inMonth;
-                                            const dots = Math.min(count, 3);
-                                            const rest = count - dots;
-
-                                            return (
-                                                <Box
-                                                    key={cell.key}
-                                                    role="button"
-                                                    tabIndex={0}
-                                                    onClick={() => setSelectedDateKey(cell.key)}
-                                                    onKeyDown={(e) => {
-                                                        if (e.key === 'Enter' || e.key === ' ') setSelectedDateKey(cell.key);
-                                                    }}
-                                                    sx={{
-                                                        userSelect: 'none',
-                                                        cursor: 'pointer',
-                                                        border: '1px solid',
-                                                        borderColor: selected ? 'primary.main' : 'divider',
-                                                        borderRadius: 1.25,
-                                                        bgcolor: selected ? 'action.selected' : 'background.paper',
-                                                        p: 0.75,
-                                                        minHeight: { xs: 46, sm: 48, md: 44 },
-                                                        display: 'flex',
-                                                        flexDirection: 'column',
-                                                        gap: 0.5,
-                                                        outline: 'none',
-                                                        '&:focus-visible': { borderColor: 'primary.main' },
-                                                    }}
-                                                >
-                                                    <Typography
-                                                        variant="body2"
-                                                        sx={{
-                                                            fontWeight: 800,
-                                                            lineHeight: 1,
-                                                            color: muted ? 'text.disabled' : 'text.primary',
-                                                        }}
-                                                    >
-                                                        {cell.day}
-                                                    </Typography>
-
-                                                    {count > 0 ? (
-                                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
-                                                            {Array.from({ length: dots }).map((_, i) => (
-                                                                <Box
-                                                                    // eslint-disable-next-line react/no-array-index-key
-                                                                    key={i}
-                                                                    sx={{ width: 6, height: 6, borderRadius: 999, bgcolor: 'primary.main' }}
-                                                                />
-                                                            ))}
-                                                            {rest > 0 ? (
-                                                                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-                                                                    +{rest}
-                                                                </Typography>
-                                                            ) : null}
-                                                        </Box>
-                                                    ) : null}
-                                                </Box>
-                                            );
-                                        })}
-                                    </Box>
-
-                                    <Box sx={{ mt: 1.5, pt: 1.25, borderTop: '1px solid', borderColor: 'divider' }}>
-                                        <Typography variant="body2" sx={{ fontWeight: 800, mb: 1 }}>
-                                            {selectedDateKey}
-                                        </Typography>
-
-                                        {selectedEvents.length === 0 ? (
-                                            <Typography variant="body2" color="text.secondary">
-                                                No items.
-                                            </Typography>
-                                        ) : (
-                                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                                                {selectedEvents.map((r) => (
-                                                    <Box
-                                                        key={r.id}
-                                                        sx={{
-                                                            border: '1px solid',
-                                                            borderColor: 'divider',
-                                                            borderRadius: 1.25,
-                                                            p: 1.25,
-                                                            bgcolor: 'background.default',
-                                                        }}
-                                                    >
-                                                        <Typography sx={{ fontWeight: 700 }} noWrap>
-                                                            {r.type || 'Leave'} • {r.displayName || r.userUID || 'Unknown'}
-                                                        </Typography>
-                                                        <Typography variant="caption" color="text.secondary" noWrap>
-                                                            {String(r.startDate || '')} → {String(r.endDate || '')} • {r.status || 'Pending'}
-                                                        </Typography>
-                                                    </Box>
-                                                ))}
-                                            </Box>
-                                        )}
-                                    </Box>
-                                </>
-                            )}
                         </SectionCard>
 
                     </Box>
