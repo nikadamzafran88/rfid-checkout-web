@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react'
-import { Box, Button, TextField, Typography, Paper, MenuItem, Table, TableBody, TableCell, TableHead, TableRow } from '@mui/material'
+import { Box, Button, TextField, Typography, MenuItem, Table, TableBody, TableCell, TableHead, TableRow, TableContainer, CircularProgress, Stack, Alert } from '@mui/material'
 import { httpsCallable } from 'firebase/functions'
 import { fns, db } from '../services/firebase'
 import { collection, getDocs, query, orderBy } from 'firebase/firestore'
+import PageHeader from '../components/ui/PageHeader'
+import SectionCard from '../components/ui/SectionCard'
 
 export default function PromoCodes() {
   const [code, setCode] = useState('')
@@ -51,61 +53,76 @@ export default function PromoCodes() {
   }
 
   return (
-    <Box>
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-        <Typography variant="h5" sx={{ fontWeight: 700 }}>Discounts</Typography>
-        <Box>
-          <Button variant="outlined" onClick={loadList} sx={{ mr: 1 }}>Refresh</Button>
-          <Button variant="contained" onClick={create} disabled={loading}>Create</Button>
-        </Box>
-      </Box>
+    <Box sx={{ p: 3 }}>
+      <PageHeader title="Discounts" subtitle="Create and manage discount codes." />
 
-      <Paper sx={{ p: { xs: 2, md: 3 }, mb: 3 }}>
-        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4, 1fr)' }, gap: 2 }}>
-          <TextField fullWidth label="Code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} />
-          <TextField fullWidth select label="Type" value={type} onChange={(e) => setType(e.target.value)}>
-            <MenuItem value="fixed">Fixed (MYR)</MenuItem>
-            <MenuItem value="percent">Percent (%)</MenuItem>
-          </TextField>
-          <TextField fullWidth label="Value" value={value} onChange={(e) => setValue(e.target.value)} />
-          <TextField fullWidth label="Max uses (0=unlimited)" value={maxUses} onChange={(e) => setMaxUses(e.target.value)} />
-          <TextField fullWidth label="Stations (comma-separated)" value={stations} onChange={(e) => setStations(e.target.value)} sx={{ gridColumn: { xs: '1 / -1', md: '1 / span 2' } }} />
-          <TextField fullWidth label="Expires at (ISO)" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} sx={{ gridColumn: { xs: '1 / -1', md: '3 / span 2' } }} />
-        </Box>
+      <SectionCard sx={{ mb: 3 }}>
+        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems="center" justifyContent="space-between">
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4, 1fr)' }, gap: 2, width: '100%' }}>
+            <TextField fullWidth label="Code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} />
+            <TextField fullWidth select label="Type" value={type} onChange={(e) => setType(e.target.value)}>
+              <MenuItem value="fixed">Fixed (MYR)</MenuItem>
+              <MenuItem value="percent">Percent (%)</MenuItem>
+            </TextField>
+            <TextField fullWidth label="Value" value={value} onChange={(e) => setValue(e.target.value)} />
+            <TextField fullWidth label="Max uses (0=unlimited)" value={maxUses} onChange={(e) => setMaxUses(e.target.value)} />
+            <TextField fullWidth label="Stations (comma-separated)" value={stations} onChange={(e) => setStations(e.target.value)} sx={{ gridColumn: { xs: '1 / -1', md: '1 / span 2' } }} />
+            <TextField fullWidth label="Expires at (ISO)" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} sx={{ gridColumn: { xs: '1 / -1', md: '3 / span 2' } }} />
+          </Box>
+
+          <Box>
+            <Button variant="outlined" onClick={loadList} sx={{ mr: 1 }}>Refresh</Button>
+            <Button variant="contained" onClick={create} disabled={loading}>Create</Button>
+          </Box>
+        </Stack>
         {error ? <Typography color="error" sx={{ mt: 2 }}>{error}</Typography> : null}
-      </Paper>
+      </SectionCard>
 
-      <Paper sx={{ p: 2 }}>
+      <SectionCard>
         <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 600 }}>Existing Discounts</Typography>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Code</TableCell>
-              <TableCell>Type</TableCell>
-              <TableCell>Value</TableCell>
-              <TableCell>Uses</TableCell>
-              <TableCell>Max</TableCell>
-              <TableCell>Active</TableCell>
-              <TableCell align="right">Actions</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {list.map((p) => (
-              <TableRow key={p.id}>
-                <TableCell>{p.code}</TableCell>
-                <TableCell>{p.type}</TableCell>
-                <TableCell>{p.type === 'percent' ? `${p.value}%` : `RM ${Number(p.value || 0).toFixed(2)}`}</TableCell>
-                <TableCell>{p.uses || 0}</TableCell>
-                <TableCell>{p.maxUses || 0}</TableCell>
-                <TableCell>{p.active ? 'Yes' : 'No'}</TableCell>
-                <TableCell align="right">
-                  <Button size="small" variant="outlined" sx={{ mr: 1 }} onClick={() => { navigator.clipboard?.writeText(p.code) }}>Copy</Button>
-                </TableCell>
+        <TableContainer>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Code</TableCell>
+                <TableCell>Type</TableCell>
+                <TableCell>Value</TableCell>
+                <TableCell>Uses</TableCell>
+                <TableCell>Max</TableCell>
+                <TableCell>Active</TableCell>
+                <TableCell align="right">Actions</TableCell>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Paper>
+            </TableHead>
+            <TableBody>
+              {loading ? (
+                <TableRow>
+                  <TableCell colSpan={7} sx={{ py: 4, textAlign: 'center' }}>
+                    <CircularProgress size={24} />
+                  </TableCell>
+                </TableRow>
+              ) : list.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={7} sx={{ py: 3, textAlign: 'center' }}>No discounts found.</TableCell>
+                </TableRow>
+              ) : (
+                list.map((p) => (
+                  <TableRow key={p.id} hover>
+                    <TableCell>{p.code}</TableCell>
+                    <TableCell>{p.type}</TableCell>
+                    <TableCell>{p.type === 'percent' ? `${p.value}%` : `RM ${Number(p.value || 0).toFixed(2)}`}</TableCell>
+                    <TableCell>{p.uses || 0}</TableCell>
+                    <TableCell>{p.maxUses || 0}</TableCell>
+                    <TableCell>{p.active ? 'Yes' : 'No'}</TableCell>
+                    <TableCell align="right">
+                      <Button size="small" variant="outlined" sx={{ mr: 1 }} onClick={() => { navigator.clipboard?.writeText(p.code) }}>Copy</Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </SectionCard>
     </Box>
   )
 }

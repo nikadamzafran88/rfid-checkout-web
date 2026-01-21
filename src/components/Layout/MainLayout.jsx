@@ -61,6 +61,7 @@ const MainLayout = () => {
         },
         { to: '/admin/sold-items', Icon: ShoppingCart, label: 'Sold Items' },
         { to: '/admin/inventory', Icon: Package, label: 'Inventory' },
+        { to: '/admin/discounts', Icon: FileText, label: 'Discounts' },
       ],
     },
     {
