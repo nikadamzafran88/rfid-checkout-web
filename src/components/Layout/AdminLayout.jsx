@@ -197,6 +197,13 @@ const AdminLayout = () => {
               </Box>
             </Box>
 
+            {/* Quick links (e.g., Discounts) */}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Button component={NavLink} to="/admin/discounts" size="small" variant="outlined" sx={{ textTransform: 'none' }}>
+                Discounts
+              </Button>
+            </Box>
+
             {/* 2. Centered Search Bar */}
             <Box sx={{ flex: 1, px: 3, display: 'flex', justifyContent: 'center' }}>
               <Box sx={{ width: '100%', maxWidth: 720 }}>

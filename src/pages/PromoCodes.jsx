@@ -52,30 +52,32 @@ export default function PromoCodes() {
 
   return (
     <Box>
-      <Typography variant="h5" sx={{ mb: 2, fontWeight: 900 }}>Promo Codes</Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+        <Typography variant="h5" sx={{ fontWeight: 700 }}>Discounts</Typography>
+        <Box>
+          <Button variant="outlined" onClick={loadList} sx={{ mr: 1 }}>Refresh</Button>
+          <Button variant="contained" onClick={create} disabled={loading}>Create</Button>
+        </Box>
+      </Box>
 
-      <Paper sx={{ p: 2, mb: 3 }}>
-        <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 1 }}>
-          <TextField label="Code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} />
-          <TextField select label="Type" value={type} onChange={(e) => setType(e.target.value)}>
+      <Paper sx={{ p: { xs: 2, md: 3 }, mb: 3 }}>
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(4, 1fr)' }, gap: 2 }}>
+          <TextField fullWidth label="Code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} />
+          <TextField fullWidth select label="Type" value={type} onChange={(e) => setType(e.target.value)}>
             <MenuItem value="fixed">Fixed (MYR)</MenuItem>
             <MenuItem value="percent">Percent (%)</MenuItem>
           </TextField>
-          <TextField label="Value" value={value} onChange={(e) => setValue(e.target.value)} />
-          <TextField label="Max uses (0=unlimited)" value={maxUses} onChange={(e) => setMaxUses(e.target.value)} />
-          <TextField label="Stations (comma-separated)" value={stations} onChange={(e) => setStations(e.target.value)} sx={{ gridColumn: '1 / span 2' }} />
-          <TextField label="Expires at (ISO)" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} sx={{ gridColumn: '3 / span 2' }} />
+          <TextField fullWidth label="Value" value={value} onChange={(e) => setValue(e.target.value)} />
+          <TextField fullWidth label="Max uses (0=unlimited)" value={maxUses} onChange={(e) => setMaxUses(e.target.value)} />
+          <TextField fullWidth label="Stations (comma-separated)" value={stations} onChange={(e) => setStations(e.target.value)} sx={{ gridColumn: { xs: '1 / -1', md: '1 / span 2' } }} />
+          <TextField fullWidth label="Expires at (ISO)" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} sx={{ gridColumn: { xs: '1 / -1', md: '3 / span 2' } }} />
         </Box>
-        <Box sx={{ display: 'flex', gap: 1, mt: 2 }}>
-          <Button variant="contained" onClick={create} disabled={loading}>Create</Button>
-          <Button variant="outlined" onClick={loadList}>Refresh</Button>
-          {error ? <Typography color="error">{error}</Typography> : null}
-        </Box>
+        {error ? <Typography color="error" sx={{ mt: 2 }}>{error}</Typography> : null}
       </Paper>
 
       <Paper sx={{ p: 2 }}>
-        <Typography variant="subtitle1" sx={{ mb: 1 }}>Existing Codes</Typography>
-        <Table>
+        <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 600 }}>Existing Discounts</Typography>
+        <Table size="small">
           <TableHead>
             <TableRow>
               <TableCell>Code</TableCell>
@@ -84,6 +86,7 @@ export default function PromoCodes() {
               <TableCell>Uses</TableCell>
               <TableCell>Max</TableCell>
               <TableCell>Active</TableCell>
+              <TableCell align="right">Actions</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -95,6 +98,9 @@ export default function PromoCodes() {
                 <TableCell>{p.uses || 0}</TableCell>
                 <TableCell>{p.maxUses || 0}</TableCell>
                 <TableCell>{p.active ? 'Yes' : 'No'}</TableCell>
+                <TableCell align="right">
+                  <Button size="small" variant="outlined" sx={{ mr: 1 }} onClick={() => { navigator.clipboard?.writeText(p.code) }}>Copy</Button>
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
