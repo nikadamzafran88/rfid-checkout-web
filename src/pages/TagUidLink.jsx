@@ -3,7 +3,7 @@ import { db, rtdb } from '../firebaseConfig';
 import PageHeader from '../components/ui/PageHeader';
 import SectionCard from '../components/ui/SectionCard';
 import { ref as rtdbRef, onValue, set as rtdbSet, get as rtdbGet } from 'firebase/database';
-import { collection, getDocs, doc, runTransaction, serverTimestamp } from 'firebase/firestore';
+import { collection, getDocs, doc, runTransaction, serverTimestamp, addDoc, updateDoc } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext.jsx';
 import { logAction } from '../utils/logAction';
 import {
@@ -51,6 +51,10 @@ const TagUidLink = () => {
   const [batchCount, setBatchCount] = useState(0);
   const [batchStatus, setBatchStatus] = useState('');
   const [batchError, setBatchError] = useState('');
+  const [csvUploading, setCsvUploading] = useState(false);
+  const [csvUploadError, setCsvUploadError] = useState('');
+  const [currentBatchId, setCurrentBatchId] = useState('');
+  const [processedUids, setProcessedUids] = useState([]);
   const [scanSeq, setScanSeq] = useState(0);
   const batchProcessingRef = useRef(false);
   const processedBatchUidsRef = useRef(new Set());
@@ -263,10 +267,40 @@ const TagUidLink = () => {
       setBatchError('Select a product first to enable Batch Mode.');
       return;
     }
-    setBatchMode(checked);
-    setBatchCount(0);
-    processedBatchUidsRef.current = new Set();
-    pendingBatchUidsRef.current = [];
+    const enable = async () => {
+      setBatchMode(checked);
+      setBatchCount(0);
+      processedBatchUidsRef.current = new Set();
+      pendingBatchUidsRef.current = [];
+      setProcessedUids([]);
+      if (checked) {
+        // create a persistent batch record so logs can be attached
+        try {
+          const bdoc = await addDoc(collection(db, 'tagging_batches'), {
+            createdBy: currentUser?.uid || null,
+            createdAt: serverTimestamp(),
+            productId: selectedProductId,
+            status: 'processing',
+          });
+          setCurrentBatchId(bdoc.id);
+        } catch (e) {
+          console.warn('Failed to create batch doc', e);
+        }
+      } else {
+        // closing batch: mark completed
+        if (currentBatchId) {
+          try {
+            const batchRef = doc(db, 'tagging_batches', currentBatchId);
+            await updateDoc(batchRef, { status: 'completed', completedAt: serverTimestamp() });
+          } catch (e) {
+            console.warn('Failed to mark batch completed', e);
+          }
+          setCurrentBatchId('');
+        }
+      }
+    };
+
+    enable();
   };
 
   const enqueueBatchUid = (uid) => {
@@ -302,18 +336,138 @@ const TagUidLink = () => {
           }
 
           processedBatchUidsRef.current.add(nextUid);
+          // update local rendered list
+          try {
+            setProcessedUids(Array.from(processedBatchUidsRef.current));
+          } catch {
+            // ignore
+          }
           if (res?.didAddStock) {
             setBatchCount((n) => n + 1);
           }
           setBatchStatus(`Saved ${nextUid}`);
+          // If a batch is active, persist a log entry for this UID
+          if (currentBatchId) {
+            try {
+              await addDoc(collection(db, 'tagging_batches', currentBatchId, 'uids'), {
+                uid: nextUid,
+                prevProductId: res?.prevProductId || null,
+                newProductId: pid,
+                addedStock: Boolean(res?.didAddStock),
+                status: 'ok',
+                processedAt: serverTimestamp(),
+                processedBy: currentUser?.uid || null,
+              });
+            } catch (e) {
+              // ignore logging failures
+              console.warn('Failed to write batch UID log', e);
+            }
+          }
         } catch (e) {
           const msg = e?.message ? String(e.message) : 'Failed to save UID';
           setBatchError(`${msg}: ${String(nextUid)}`);
+          if (currentBatchId) {
+            try {
+              await addDoc(collection(db, 'tagging_batches', currentBatchId, 'uids'), {
+                uid: nextUid,
+                error: msg,
+                status: 'error',
+                processedAt: serverTimestamp(),
+                processedBy: currentUser?.uid || null,
+              });
+            } catch (ee) {
+              console.warn('Failed to write batch UID error log', ee);
+            }
+          }
         }
       }
     } finally {
       batchProcessingRef.current = false;
+      // If we have a persistent batch doc and no pending UIDs, mark it completed
+      if (currentBatchId && pendingBatchUidsRef.current.length === 0) {
+        try {
+          const batchRef = doc(db, 'tagging_batches', currentBatchId);
+          await updateDoc(batchRef, { status: 'completed', completedAt: serverTimestamp() });
+          // clear currentBatchId so we don't try to update repeatedly
+          setCurrentBatchId('');
+        } catch (e) {
+          console.warn('Failed to mark batch completed after draining queue', e);
+        }
+      }
     }
+  };
+
+  const handleCsvFile = async (file) => {
+    setCsvUploadError('');
+    if (!file) return;
+    if (!selectedProductId) {
+      setCsvUploadError('Select a product before uploading CSV');
+      return;
+    }
+
+    setCsvUploading(true);
+    try {
+      const text = await file.text();
+      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      if (lines.length === 0) throw new Error('CSV is empty');
+
+      // require template header: first column must be 'uid'
+      const headerParts = lines[0].split(',').map((h) => h.trim().toLowerCase());
+      if (headerParts[0] !== 'uid') {
+        throw new Error("CSV must start with header 'uid'. Download the template and retry.");
+      }
+      const startIdx = 1;
+
+      // create batch doc
+      const batchDoc = await addDoc(collection(db, 'tagging_batches'), {
+        createdBy: currentUser?.uid || null,
+        createdAt: serverTimestamp(),
+        productId: selectedProductId,
+        status: 'processing',
+      });
+      setCurrentBatchId(batchDoc.id);
+
+      // enqueue all UIDs
+      for (let i = startIdx; i < lines.length; i++) {
+        const row = lines[i];
+        // take first column as uid
+        const cols = row.split(',');
+        const uid = String(cols[0] || '').trim();
+        if (!uid) continue;
+        enqueueBatchUid(uid);
+      }
+
+      setBatchStatus(`Imported ${pendingBatchUidsRef.current.length} UIDs to queue`);
+      await drainBatchQueue(selectedProductId);
+
+      // mark batch done
+      try {
+        await addDoc(collection(db, 'tagging_batches', batchDoc.id, 'meta'), {
+          completedAt: serverTimestamp(),
+        });
+      } catch (e) {
+        // ignore
+      }
+
+      setBatchStatus('CSV processed');
+    } catch (err) {
+      setCsvUploadError(err?.message ? String(err.message) : 'Failed to process CSV');
+    } finally {
+      setCsvUploading(false);
+    }
+  };
+
+  const downloadCsvTemplate = () => {
+    const cols = ['uid'];
+    const example = ['E200001234567890'];
+    const lines = [cols.join(','), example.join(',')];
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'tagging_template.csv';
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const linkManualUid = async () => {
@@ -476,6 +630,38 @@ const TagUidLink = () => {
               </Button>
             </Box>
           ) : null}
+          {batchMode ? (
+            <Box sx={{ mt: 1, display: 'flex', gap: 1, justifyContent: 'flex-end', alignItems: 'center' }}>
+              <input
+                id="tag-csv-input"
+                type="file"
+                accept=".csv,text/csv"
+                style={{ display: 'none' }}
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  await handleCsvFile(f);
+                  e.target.value = null;
+                }}
+              />
+              <label htmlFor="tag-csv-input">
+                <Button component="span" variant="outlined" disabled={csvUploading || !selectedProductId}>
+                  {csvUploading ? 'Uploading...' : 'Upload CSV'}
+                </Button>
+              </label>
+              <Button variant="outlined" onClick={downloadCsvTemplate} disabled={csvUploading}>
+                Download Template
+              </Button>
+              <Button variant="outlined" onClick={() => { setCurrentBatchId(''); setBatchCount(0); setBatchStatus(''); setBatchError(''); processedBatchUidsRef.current = new Set(); pendingBatchUidsRef.current = []; setProcessedUids([]); }}>
+                Reset
+              </Button>
+            </Box>
+          ) : null}
+          {csvUploadError ? (
+            <Alert severity="error" sx={{ mt: 1 }}>
+              {csvUploadError}
+            </Alert>
+          ) : null}
           {batchError ? (
             <Alert severity="error" sx={{ mt: 1 }}>
               {batchError}
@@ -485,6 +671,17 @@ const TagUidLink = () => {
             <Alert severity="success" sx={{ mt: 1 }}>
               {batchStatus}
             </Alert>
+          ) : null}
+          {batchMode && processedUids.length > 0 ? (
+            <Box sx={{ mt: 1, maxHeight: 220, overflow: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 1 }}>
+              <Typography variant="subtitle2" sx={{ mb: 0.5 }}>Processed UIDs ({processedUids.length})</Typography>
+              {processedUids.map((u) => (
+                <Box key={u} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5, borderBottom: '1px dashed', borderColor: 'divider' }}>
+                  <Typography sx={{ fontFamily: 'monospace' }}>{u}</Typography>
+                </Box>
+              ))}
+              {/* actions intentionally removed: Open Batches / Copy */}
+            </Box>
           ) : null}
         </Box>
 

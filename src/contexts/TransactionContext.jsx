@@ -29,6 +29,8 @@ export function TransactionProvider({ children }) {
   const [redeemPoints, setRedeemPoints] = useState(0)
   const POINT_TO_MYR = 0.01 // 1 point = RM0.01
   const discountAmount = Math.max(0, Math.round((Number(redeemPoints || 0) * POINT_TO_MYR) * 100) / 100)
+  const [lastTransactionDiscount, setLastTransactionDiscount] = useState(0)
+  const [lastTransactionRedeemedAmount, setLastTransactionRedeemedAmount] = useState(0)
   const [idleRemainingSeconds, setIdleRemainingSeconds] = useState(0)
   const [rtdbConnected, setRtdbConnected] = useState(false)
   const IDLE_TIMEOUT_MS = 2 * 60 * 1000 // 2 minutes inactivity -> reset to IDLE
@@ -69,6 +71,15 @@ export function TransactionProvider({ children }) {
     const receiptToken = res?.data?.receiptToken ? String(res.data.receiptToken) : null
     setLastTxId(String(txId))
     setLastReceiptToken(receiptToken)
+    // capture server-applied discounts: promo and redeemed amounts
+    try {
+      const serverPromo = Number(res?.data?.promoDiscount || 0)
+      const serverRedeemed = Number(res?.data?.redeemedAmount || 0)
+      setLastTransactionDiscount(Number.isFinite(serverPromo) ? serverPromo : 0)
+      setLastTransactionRedeemedAmount(Number.isFinite(serverRedeemed) ? serverRedeemed : 0)
+    } catch {}
+    // clear any in-progress redemption selection now that transaction recorded
+    try { setRedeemPoints(0) } catch {}
 
     // Refresh membership data after transaction so UI shows updated points
     try {
@@ -270,6 +281,10 @@ export function TransactionProvider({ children }) {
     redeemPoints,
     setRedeemPoints: setRedeemPointsBounded,
     discountAmount,
+    lastTransactionDiscount,
+    lastTransactionRedeemedAmount,
+    setLastTransactionDiscount,
+    setLastTransactionRedeemedAmount,
     POINT_TO_MYR,
   }
 

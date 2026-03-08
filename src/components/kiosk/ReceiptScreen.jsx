@@ -6,8 +6,9 @@ import QRCode from 'react-qr-code'
 import { jsPDF } from 'jspdf'
 
 export default function ReceiptScreen() {
-  const { lastTxId, lastReceiptToken, end, cart, amount, stationId, touchActivity, db, membership, redeemPoints, discountAmount } = useTransaction()
+  const { lastTxId, lastReceiptToken, end, cart, amount, stationId, touchActivity, db, membership, redeemPoints, discountAmount, lastTransactionDiscount, lastTransactionRedeemedAmount } = useTransaction()
   const [kioskLogoUrl, setKioskLogoUrl] = useState('')
+  const [serverReceipt, setServerReceipt] = useState(null)
   const [autoReturn, setAutoReturn] = useState(30)
   const [issuedAt] = useState(() => new Date())
   const invoiceRef = useRef(null)
@@ -66,6 +67,32 @@ export default function ReceiptScreen() {
     load()
     return () => { mounted = false }
   }, [stationId, db])
+
+  // Load server-side receipt (public_receipts) to ensure totals match billed amount
+  useEffect(() => {
+    let mounted = true
+    const load = async () => {
+      if (!lastReceiptToken || !db) {
+        if (mounted) setServerReceipt(null)
+        return
+      }
+      try {
+        const rRef = fsDoc(db, 'public_receipts', String(lastReceiptToken))
+        const snap = await fsGetDoc(rRef)
+        if (!mounted) return
+        if (snap.exists()) {
+          setServerReceipt(snap.data() || null)
+        } else {
+          setServerReceipt(null)
+        }
+      } catch (e) {
+        console.warn('Failed to load server receipt', e)
+        if (mounted) setServerReceipt(null)
+      }
+    }
+    load()
+    return () => { mounted = false }
+  }, [lastReceiptToken, db])
 
   // print/send-email features removed for kiosk mode
 
@@ -155,20 +182,36 @@ export default function ReceiptScreen() {
         })
       }
 
-      // Subtotal line
+      // Subtotal line (prefer server totals when available)
       y += 4
       doc.setDrawColor(200)
       doc.line(20, y, pageWidth - 20, y)
       y += 8
 
-      // Total
+      const src = serverReceipt || {}
+      const pdfSubtotal = Number(src.subtotalAmount ?? amount ?? 0)
+      const pdfPromo = Number(src.promoDiscount ?? lastTransactionDiscount ?? 0)
+      const pdfRedeemed = Number(src.redeemedAmount ?? lastTransactionRedeemedAmount ?? discountAmount ?? 0)
+      const pdfTotalDiscount = Math.round(((pdfPromo + pdfRedeemed) * 100)) / 100
+      const pdfTotalPaid = Number(src.totalAmount ?? ((amount || 0) - pdfTotalDiscount))
+
       doc.setFontSize(10)
       doc.setTextColor(100)
       doc.text('Subtotal', pageWidth - 70, y)
       doc.setTextColor(0)
       doc.setFont('helvetica', 'bold')
-      doc.text(`RM ${Number(amount || 0).toFixed(2)}`, pageWidth - 35, y, { align: 'right' })
+      doc.text(`RM ${Number(pdfSubtotal || 0).toFixed(2)}`, pageWidth - 35, y, { align: 'right' })
       y += 10
+
+      // Discounts (promo + redeemed)
+      if (pdfTotalDiscount > 0) {
+        doc.setFontSize(10)
+        doc.setTextColor(100)
+        doc.text('Discount', pageWidth - 70, y)
+        doc.setTextColor(0)
+        doc.text(`- RM ${Number(pdfTotalDiscount).toFixed(2)}`, pageWidth - 35, y, { align: 'right' })
+        y += 10
+      }
 
       doc.setFillColor(33, 150, 83)
       doc.roundedRect(pageWidth - 80, y - 2, 60, 12, 2, 2, 'F')
@@ -176,7 +219,14 @@ export default function ReceiptScreen() {
       doc.setFontSize(11)
       doc.text('PAID', pageWidth - 50, y + 6, { align: 'center' })
 
-      y += 20
+      // Show total paid on PDF (prefer server value)
+      y += 6
+      doc.setFontSize(12)
+      doc.setTextColor(255)
+      doc.setFont('helvetica', 'bold')
+      doc.text(`RM ${Number(pdfTotalPaid || 0).toFixed(2)}`, pageWidth - 35, y + 6, { align: 'right' })
+
+      y += 18
 
       // Footer
       doc.setTextColor(100)
@@ -345,20 +395,35 @@ export default function ReceiptScreen() {
 
           {/* Totals */}
           <Box sx={{ px: 3, py: 2, bgcolor: 'grey.50', borderTop: '2px solid', borderColor: 'grey.300' }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-              <Typography sx={{ color: 'text.secondary' }}>Subtotal ({cart.length} item{cart.length !== 1 ? 's' : ''})</Typography>
-              <Typography sx={{ fontWeight: 700 }}>RM {Number(amount || 0).toFixed(2)}</Typography>
-            </Box>
-            {discountAmount > 0 ? (
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-                <Typography sx={{ color: 'text.secondary' }}>Discount</Typography>
-                <Typography sx={{ fontWeight: 700, color: 'text.secondary' }}>- RM {Number(discountAmount || 0).toFixed(2)}</Typography>
-              </Box>
-            ) : null}
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Typography variant="h6" sx={{ fontWeight: 900 }}>Total Paid</Typography>
-              <Typography variant="h5" sx={{ fontWeight: 950, color: 'success.main' }}>RM {Number((amount || 0) - (discountAmount || 0)).toFixed(2)}</Typography>
-            </Box>
+            {(() => {
+              const src = serverReceipt || {}
+              const dispSubtotal = Number(src.subtotalAmount ?? amount ?? 0)
+              const dispPromo = Number(src.promoDiscount ?? lastTransactionDiscount ?? 0)
+              const dispRedeemed = Number(src.redeemedAmount ?? lastTransactionRedeemedAmount ?? discountAmount ?? 0)
+              const dispTotalDiscount = Math.round(((dispPromo + dispRedeemed) * 100)) / 100
+              const dispTotalPaid = Number(src.totalAmount ?? ((dispSubtotal || 0) - dispTotalDiscount))
+
+              return (
+                <>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                    <Typography sx={{ color: 'text.secondary' }}>Subtotal ({cart.length} item{cart.length !== 1 ? 's' : ''})</Typography>
+                    <Typography sx={{ fontWeight: 700 }}>RM {Number(dispSubtotal || 0).toFixed(2)}</Typography>
+                  </Box>
+
+                  {dispTotalDiscount > 0 ? (
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                      <Typography sx={{ color: 'text.secondary' }}>Discount</Typography>
+                      <Typography sx={{ fontWeight: 700, color: 'text.secondary' }}>- RM {Number(dispTotalDiscount).toFixed(2)}</Typography>
+                    </Box>
+                  ) : null}
+
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Typography variant="h6" sx={{ fontWeight: 900 }}>Total Paid</Typography>
+                    <Typography variant="h5" sx={{ fontWeight: 950, color: 'success.main' }}>RM {Number(dispTotalPaid || 0).toFixed(2)}</Typography>
+                  </Box>
+                </>
+              )
+            })()}
           </Box>
 
           {/* Payment Status Badge */}

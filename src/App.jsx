@@ -11,6 +11,7 @@ import InventoryManagement from './pages/InventoryManagement';
 import CustomerCheckout from './pages/CustomerCheckout';
 import UserManagement from './pages/UserManagement'; 
 import MembershipManagement from './pages/MembershipManagement';
+import MemberDetails from './pages/MemberDetails';
 import TransactionManagement from './pages/TransactionManagement';
 import StripeTransactions from './pages/StripeTransactions';
 import BillplzTransactions from './pages/BillplzTransactions';
@@ -21,6 +22,7 @@ import Logs from './pages/Logs';
 import ProductManagement from './pages/ProductManagement';
 import ProductMaster from './pages/ProductMaster';
 import TagUidLink from './pages/TagUidLink';
+import TaggingBatches from './pages/TaggingBatches';
 import ProductItems from './pages/ProductItems';
 import FinancialReports from './pages/FinancialReports';
 import Profile from './pages/Profile';
@@ -84,6 +86,7 @@ const App = () => {
           <Route path="products" element={<ProductManagement />} />
           <Route path="products/master" element={<ProductMaster />} />
           <Route path="products/tags" element={<TagUidLink />} />
+          <Route path="products/tagging-batches" element={<TaggingBatches />} />
           <Route path="products/items" element={<ProductItems />} />
           <Route path="profile" element={<Profile />} />
           <Route path="reports" element={
@@ -117,6 +120,7 @@ const App = () => {
           } />
           <Route path="users" element={<UserManagement />} /> 
           <Route path="memberships" element={<MembershipManagement />} />
+          <Route path="members/:memberId" element={<MemberDetails />} />
           <Route path="discounts" element={<PromoCodes />} />
           <Route path="logs" element={<Logs />} />
       </Route>

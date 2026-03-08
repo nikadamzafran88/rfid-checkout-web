@@ -9,13 +9,16 @@ const AiSummary = ({
   scope = 'default',
   title = 'AI Executive Summary',
   idleSubtitle,
+  showAudienceButtons = true,
+  defaultAudience = 'owner',
+  requireStructured = false,
 }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [summary, setSummary] = useState('');
   const [structured, setStructured] = useState(null);
   const [generatedAt, setGeneratedAt] = useState(0);
-  const [audience, setAudience] = useState('owner');
+  const [audience, setAudience] = useState(defaultAudience);
 
   const userRole = String(role || '').toLowerCase();
   const allowedAudiences = useMemo(() => {
@@ -25,7 +28,7 @@ const AiSummary = ({
     return [];
   }, [userRole]);
 
-  const canGenerate = allowedAudiences.length > 0 && !disabled && sales && typeof sales === 'object';
+  const canGenerate = (!showAudienceButtons || allowedAudiences.length > 0) && !disabled && sales && typeof sales === 'object';
 
   // Ensure selected audience is permitted for this role.
   useEffect(() => {
@@ -74,6 +77,15 @@ const AiSummary = ({
       const text = json?.summary ? String(json.summary) : '';
       const structuredObj = json?.structured && typeof json.structured === 'object' ? json.structured : null;
       const trimmed = text.trim();
+
+      if (requireStructured && !structuredObj) {
+        setError('AI did not return structured JSON. Please try Regenerate.');
+        setSummary('');
+        setStructured(null);
+        setLoading(false);
+        return;
+      }
+
       if (!trimmed && !structuredObj) {
         throw new Error('AI returned an empty response. Please try Regenerate.');
       }
@@ -116,7 +128,7 @@ const AiSummary = ({
         </Box>
 
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-          {allowedAudiences.length > 1 ? (
+          {(showAudienceButtons && allowedAudiences.length > 1) ? (
             <ButtonGroup size="small" variant="outlined" disabled={!canGenerate || loading}>
               {allowedAudiences.includes('owner') ? (
                 <Button

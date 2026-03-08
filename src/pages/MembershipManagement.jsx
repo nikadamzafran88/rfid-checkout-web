@@ -24,8 +24,9 @@ import {
   Stack,
   Alert,
 } from '@mui/material'
+import { useNavigate } from 'react-router-dom'
 import { useTheme } from '@mui/material/styles'
-import { Search, Edit2, Trash2 } from 'lucide-react'
+import { Search, Edit2, Trash2, Eye } from 'lucide-react'
 
 export default function MembershipManagement() {
   const theme = useTheme()
@@ -34,10 +35,23 @@ export default function MembershipManagement() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [search, setSearch] = useState('')
+  const [sortField, setSortField] = useState('createdAt')
+  const [sortDir, setSortDir] = useState('desc')
+  const [minPoints, setMinPoints] = useState('')
+  
+  const toggleSort = (field) => {
+    if (sortField === field) {
+      setSortDir((s) => (s === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortField(field)
+      setSortDir('desc')
+    }
+  }
   const [editOpen, setEditOpen] = useState(false)
   const [selectedMember, setSelectedMember] = useState(null)
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState('')
+  const navigate = useNavigate()
 
   const fetchMembers = async () => {
     setLoading(true)
@@ -115,11 +129,36 @@ export default function MembershipManagement() {
 
   useEffect(() => {
     const s = String(search || '').toLowerCase()
-    setFiltered(members.filter((m) => {
+    const minPts = Number(minPoints || 0)
+    const out = members.filter((m) => {
+      if (minPts && Number(m.points || 0) < minPts) return false
       if (!s) return true
       return (m.name || '').toLowerCase().includes(s) || (m.phone || '').toLowerCase().includes(s) || (m.id || '').toLowerCase().includes(s)
-    }))
-  }, [members, search])
+    })
+
+    // Sort
+    out.sort((a, b) => {
+      let av = a[sortField]
+      let bv = b[sortField]
+      // normalize createdAtIso
+      if (sortField === 'createdAt') {
+        av = a.createdAtIso ? Date.parse(a.createdAtIso) || 0 : 0
+        bv = b.createdAtIso ? Date.parse(b.createdAtIso) || 0 : 0
+      }
+      if (sortField === 'name') {
+        av = String(a.name || '').toLowerCase()
+        bv = String(b.name || '').toLowerCase()
+        if (av < bv) return sortDir === 'asc' ? -1 : 1
+        if (av > bv) return sortDir === 'asc' ? 1 : -1
+        return 0
+      }
+      av = Number(av || 0)
+      bv = Number(bv || 0)
+      return sortDir === 'asc' ? av - bv : bv - av
+    })
+
+    setFiltered(out)
+  }, [members, search, sortField, sortDir, minPoints])
 
   return (
     <Box sx={{ p: 3 }}>
@@ -130,6 +169,21 @@ export default function MembershipManagement() {
           <Stack direction="row" spacing={1} alignItems="center">
             <Search size={18} />
             <TextField size="small" placeholder="Search by name or phone" value={search} onChange={(e) => setSearch(e.target.value)} />
+            <TextField
+              size="small"
+              select
+              value={sortField}
+              onChange={(e) => setSortField(e.target.value)}
+              sx={{ width: 160 }}
+              SelectProps={{ native: true }}
+            >
+              <option value="createdAt">Sort: Created</option>
+              <option value="name">Sort: Name</option>
+              <option value="points">Sort: Points</option>
+              <option value="lifetimeSpend">Sort: Lifetime Spend</option>
+            </TextField>
+            <Button size="small" variant="outlined" onClick={() => setSortDir(s => s === 'asc' ? 'desc' : 'asc')}>{sortDir === 'asc' ? '▲' : '▼'}</Button>
+            <TextField size="small" placeholder="Min points" type="number" value={minPoints} onChange={(e) => setMinPoints(e.target.value)} sx={{ width: 120 }} />
           </Stack>
 
           <Box>
@@ -149,14 +203,14 @@ export default function MembershipManagement() {
       <SectionCard title="Members">
         <TableContainer>
           <Table size="small">
-            <TableHead sx={{ backgroundColor: theme.palette.grey[50], '& th': { color: theme.palette.text.primary } }}>
-              <TableRow>
-                  <TableCell sx={{ fontWeight: 600 }}>Member</TableCell>
-                  <TableCell sx={{ fontWeight: 600 }}>Phone</TableCell>
-                  <TableCell sx={{ fontWeight: 600 }}>Points</TableCell>
-                  <TableCell sx={{ fontWeight: 600 }}>Lifetime Spend</TableCell>
-                  <TableCell sx={{ fontWeight: 600 }}>Created</TableCell>
-                  <TableCell sx={{ fontWeight: 600 }}>Actions</TableCell>
+            <TableHead>
+              <TableRow sx={{ backgroundColor: (theme) => theme.palette.mode === 'dark' ? theme.palette.grey[900] : theme.palette.grey[200] }}>
+                  <TableCell sx={{ color: (theme) => theme.palette.text.primary, fontWeight: 700, cursor: 'pointer' }} onClick={() => toggleSort('name')}>Member{sortField === 'name' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}</TableCell>
+                  <TableCell sx={{ color: (theme) => theme.palette.text.primary, fontWeight: 700 }}>Phone</TableCell>
+                  <TableCell sx={{ color: (theme) => theme.palette.text.primary, fontWeight: 700, cursor: 'pointer' }} onClick={() => toggleSort('points')}>Points{sortField === 'points' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}</TableCell>
+                  <TableCell sx={{ color: (theme) => theme.palette.text.primary, fontWeight: 700, cursor: 'pointer' }} onClick={() => toggleSort('lifetimeSpend')}>Lifetime Spend{sortField === 'lifetimeSpend' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}</TableCell>
+                  <TableCell sx={{ color: (theme) => theme.palette.text.primary, fontWeight: 700, cursor: 'pointer' }} onClick={() => toggleSort('createdAt')}>Created{sortField === 'createdAt' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}</TableCell>
+                  <TableCell sx={{ color: (theme) => theme.palette.text.primary, fontWeight: 700 }}>Actions</TableCell>
                 </TableRow>
             </TableHead>
 
@@ -192,6 +246,9 @@ export default function MembershipManagement() {
                       <Stack direction="row" spacing={0.5} alignItems="center">
                         <IconButton size="small" color="primary" onClick={() => { setSelectedMember({ ...m }); setEditError(''); setEditOpen(true) }}>
                           <Edit2 size={16} />
+                        </IconButton>
+                        <IconButton size="small" color="inherit" onClick={() => navigate(`/admin/members/${m.id}`)}>
+                          <Eye size={16} />
                         </IconButton>
                         <IconButton size="small" color="error" onClick={() => confirmAndDelete(m)}>
                           <Trash2 size={16} />

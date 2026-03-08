@@ -49,11 +49,16 @@ const TransactionManagement = ({ provider = 'all' }) => {
     const isStripePage = normalizedProvider === 'stripe';
     const isAllPage = !normalizedProvider || normalizedProvider === 'all';
 
-    const emptyColSpan = 7 + (isAllPage ? 3 : isBillplzPage ? 2 : isStripePage ? 1 : 0);
+    // Added columns: Subtotal, Discount, Promo Code, Membership
+    const emptyColSpan = 11 + (isAllPage ? 3 : isBillplzPage ? 2 : isStripePage ? 1 : 0);
 
     const [rangeType, setRangeType] = useState('WEEK'); // DAY | WEEK | MONTH
     const [rangeDate, setRangeDate] = useState(() => new Date().toISOString().slice(0, 10)); // YYYY-MM-DD
     const [rangeMonth, setRangeMonth] = useState(() => new Date().toISOString().slice(0, 7)); // YYYY-MM
+    const [promoFilter, setPromoFilter] = useState('')
+    const [membershipFilter, setMembershipFilter] = useState('')
+    const [sortField, setSortField] = useState('timestamp')
+    const [sortDir, setSortDir] = useState('desc')
 
     const transactionsCollectionRef = collection(db, 'transactions');
 
@@ -148,17 +153,51 @@ const TransactionManagement = ({ provider = 'all' }) => {
     }, [rangeType, rangeDate, rangeMonth]);
 
     const filteredTransactions = useMemo(() => {
-        const list = transactions
-            .map((t) => ({ ...t, __ms: getTxMs(t) ?? 0 }))
-            .filter((t) => t.__ms >= startMs && t.__ms < endMs)
-            .filter((t) => {
-                if (isAllPage) return true;
-                const p = getTxnProvider(t);
-                return p === normalizedProvider;
-            })
-            .sort((a, b) => (b.__ms || 0) - (a.__ms || 0));
-        return list;
-    }, [transactions, startMs, endMs, isAllPage, normalizedProvider]);
+        const base = transactions.map((t) => ({ ...t, __ms: getTxMs(t) ?? 0 }));
+
+        const byRange = base.filter((t) => t.__ms >= startMs && t.__ms < endMs);
+
+        const byProvider = byRange.filter((t) => {
+            if (isAllPage) return true;
+            const p = getTxnProvider(t);
+            return p === normalizedProvider;
+        });
+
+        const byPromo = byProvider.filter((t) => {
+            if (!promoFilter) return true;
+            const code = String(t.promoCode || t.promo_code || '').toLowerCase();
+            return code.includes(promoFilter.toLowerCase());
+        });
+
+        const byMembership = byPromo.filter((t) => {
+            if (!membershipFilter) return true;
+            const mid = String(t.membershipId || t.membership_id || '').toLowerCase();
+            return mid.includes(membershipFilter.toLowerCase());
+        });
+
+        const out = Array.from(byMembership);
+        const dir = sortDir === 'asc' ? 1 : -1;
+        out.sort((a, b) => {
+            try {
+                if (sortField === 'total') {
+                    const ta = Number(a.totalAmount ?? a.total_amount ?? 0);
+                    const tb = Number(b.totalAmount ?? b.total_amount ?? 0);
+                    return (ta - tb) * dir;
+                }
+                if (sortField === 'promo') {
+                    const pa = Number(a.promoDiscount ?? a.promo_discount ?? 0);
+                    const pb = Number(b.promoDiscount ?? b.promo_discount ?? 0);
+                    return (pa - pb) * dir;
+                }
+                // default: timestamp
+                return ((a.__ms || 0) - (b.__ms || 0)) * dir;
+            } catch {
+                return 0;
+            }
+        });
+
+        return out;
+    }, [transactions, startMs, endMs, isAllPage, normalizedProvider, promoFilter, membershipFilter, sortField, sortDir]);
 
     const toCsvCell = (value) => {
         const s = value === undefined || value === null ? '' : String(value);
@@ -174,6 +213,12 @@ const TransactionManagement = ({ provider = 'all' }) => {
                 'timestamp',
                 'station_id',
                 'customer_uid',
+                'subtotal_amount',
+                'discount_amount',
+                'promo_discount',
+                'redeemed_amount',
+                'promo_code',
+                'membership_id',
                 'total_amount',
                 'payment_status',
                 'payment_method',
@@ -198,11 +243,24 @@ const TransactionManagement = ({ provider = 'all' }) => {
                 const paymentStatus = txn.paymentStatus || txn.payment_status || txn.status || '';
                 const paymentMethod = txn.paymentMethod || txn.payment_method || '';
 
+                const subtotal = (txn.subtotalAmount ?? txn.subtotal_amount ?? '');
+                const discountAmount = (txn.discountAmount ?? txn.discount_amount ?? txn.discountAmount ?? '');
+                const promoDiscount = (txn.promoDiscount ?? txn.promo_discount ?? 0);
+                const redeemedAmount = (txn.redeemedAmount ?? txn.redeemed_amount ?? 0);
+                const promoCodeField = txn.promoCode || txn.promo_code || '';
+                const membershipField = txn.membershipId || txn.membership_id || '';
+
                 const values = [
                     txn.id,
                     tsIso,
                     station,
                     customer,
+                    Number(subtotal || 0).toFixed(2),
+                    Number(discountAmount || 0).toFixed(2),
+                    Number(promoDiscount || 0).toFixed(2),
+                    Number(redeemedAmount || 0).toFixed(2),
+                    promoCodeField,
+                    membershipField,
                     Number(total || 0).toFixed(2),
                     paymentStatus,
                     paymentMethod,
@@ -320,6 +378,49 @@ const TransactionManagement = ({ provider = 'all' }) => {
                         />
                     )}
 
+                    <TextField
+                        size="small"
+                        label="Promo code"
+                        value={promoFilter}
+                        onChange={(e) => setPromoFilter(String(e.target.value))}
+                        sx={{ minWidth: 160 }}
+                    />
+
+                    <TextField
+                        size="small"
+                        label="Membership ID"
+                        value={membershipFilter}
+                        onChange={(e) => setMembershipFilter(String(e.target.value))}
+                        sx={{ minWidth: 160 }}
+                    />
+
+                    <FormControl size="small" sx={{ minWidth: 160 }}>
+                        <InputLabel id="tx-sort-field">Sort</InputLabel>
+                        <Select
+                            labelId="tx-sort-field"
+                            value={sortField}
+                            label="Sort"
+                            onChange={(e) => setSortField(String(e.target.value))}
+                        >
+                            <MenuItem value="timestamp">Timestamp</MenuItem>
+                            <MenuItem value="total">Total</MenuItem>
+                            <MenuItem value="promo">Promo</MenuItem>
+                        </Select>
+                    </FormControl>
+
+                    <FormControl size="small" sx={{ minWidth: 120 }}>
+                        <InputLabel id="tx-sort-dir">Dir</InputLabel>
+                        <Select
+                            labelId="tx-sort-dir"
+                            value={sortDir}
+                            label="Dir"
+                            onChange={(e) => setSortDir(String(e.target.value))}
+                        >
+                            <MenuItem value="desc">Desc</MenuItem>
+                            <MenuItem value="asc">Asc</MenuItem>
+                        </Select>
+                    </FormControl>
+
                     <Button variant="outlined" onClick={downloadCsv} disabled={loading || filteredTransactions.length === 0}>
                         Download CSV
                     </Button>
@@ -376,6 +477,10 @@ const TransactionManagement = ({ provider = 'all' }) => {
                                             <TableCell sx={{ fontWeight: 600 }}>Billplz Paid At</TableCell>
                                         </>
                                     ) : null}
+                                    <TableCell sx={{ fontWeight: 600 }}>Subtotal</TableCell>
+                                    <TableCell sx={{ fontWeight: 600 }}>Discount</TableCell>
+                                    <TableCell sx={{ fontWeight: 600 }}>Promo</TableCell>
+                                    <TableCell sx={{ fontWeight: 600 }}>Membership</TableCell>
                                     <TableCell sx={{ fontWeight: 600 }}>Total</TableCell>
                                     <TableCell sx={{ fontWeight: 600 }}>Payment Status</TableCell>
                                     <TableCell sx={{ fontWeight: 600, textAlign: 'right' }}>Actions</TableCell>
@@ -427,6 +532,11 @@ const TransactionManagement = ({ provider = 'all' }) => {
                                                         <TableCell sx={{ whiteSpace: 'nowrap' }}>{paidAt ? String(paidAt) : '—'}</TableCell>
                                                     </>
                                                 ) : null}
+                                                {/* New columns: subtotal, discount, promo code, membership */}
+                                                <TableCell sx={{ whiteSpace: 'nowrap' }}>RM{Number(txn.subtotalAmount ?? txn.subtotal_amount ?? 0).toFixed(2)}</TableCell>
+                                                <TableCell sx={{ whiteSpace: 'nowrap' }}>RM{Number(txn.discountAmount ?? txn.discount_amount ?? 0).toFixed(2)}</TableCell>
+                                                <TableCell sx={{ whiteSpace: 'nowrap' }}>RM{Number(txn.promoDiscount ?? txn.promo_discount ?? 0).toFixed(2)}</TableCell>
+                                                <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{txn.membershipId || txn.membership_id || '—'}</TableCell>
                                                 <TableCell sx={{ fontWeight: 700, color: (theme) => theme.palette.success.dark, whiteSpace: 'nowrap' }}>
                                                     RM{Number(total || 0).toFixed(2)}
                                                 </TableCell>

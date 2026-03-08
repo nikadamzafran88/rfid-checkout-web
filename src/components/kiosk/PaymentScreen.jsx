@@ -7,10 +7,11 @@ import { ref as dbRef, onValue } from 'firebase/database'
 import QRCode from 'react-qr-code'
 
 export default function PaymentScreen() {
-  const { amount, cart, stationId, saveTransaction, setStep, setLastTxId, setLastReceiptToken, touchActivity, end, membership, setMembership, redeemPoints, setRedeemPoints, discountAmount, POINT_TO_MYR } = useTransaction()
+  const { amount, cart, stationId, saveTransaction, setStep, setLastTxId, setLastReceiptToken, touchActivity, end, membership, setMembership, redeemPoints, setRedeemPoints, discountAmount, lastTransactionDiscount, setLastTransactionDiscount, POINT_TO_MYR } = useTransaction()
   const [promoCode, setPromoCode] = useState('')
   const [promoPreview, setPromoPreview] = useState(null)
   const [promoChecking, setPromoChecking] = useState(false)
+  const [redeemInput, setRedeemInput] = useState(() => (redeemPoints ? String(redeemPoints) : ''))
   const promoDiscount = promoPreview?.discountAmount ? Number(promoPreview.discountAmount) : 0
   const effectiveAmount = Math.max(0, Number(amount || 0) - promoDiscount - Number(discountAmount || 0))
   const [method, setMethod] = useState('BILLPLZ')
@@ -52,6 +53,16 @@ export default function PaymentScreen() {
     const extra = [code ? `code=${code}` : null, details ? `details=${details}` : null].filter(Boolean).join(' | ')
     return extra ? `${msg} (${extra})` : msg
   }
+
+  useEffect(() => {
+    // keep local input in sync when redeemPoints changes externally
+    try {
+      const s = typeof redeemPoints === 'number' ? String(redeemPoints) : ''
+      if (String(redeemInput || '') !== s) setRedeemInput(s)
+    } catch {
+      // ignore
+    }
+  }, [redeemPoints])
 
   useEffect(() => {
     return () => {
@@ -177,23 +188,34 @@ export default function PaymentScreen() {
     }
   }
 
-  const finalizeBillplz = useCallback(async ({ billId, membershipId = null, redeemedPoints = 0, discountAmount = 0 }) => {
+  const finalizeBillplz = useCallback(async ({ billId, membershipId = null, redeemedPoints = 0, discountAmount = 0, promoCode = null, amount: amountOverride = null }) => {
     setFinalizing(true)
     try {
       const finalize = httpsCallable(fns, 'finalizeBillplzTransaction')
+      const amountToSend = amountOverride !== null ? Number(amountOverride) : ((bill && bill.amountCents) ? (Number(bill.amountCents) / 100) : effectiveAmount)
       const fr = await finalize({
         stationId,
         billId,
-        amount: effectiveAmount,
+        amount: amountToSend,
         items: cart,
         membershipId: membershipId || null,
         redeemedPoints: Number(redeemedPoints || 0),
         discountAmount: Number(discountAmount || 0),
+        promoCode: promoCode || null,
       })
       const txId = fr?.data?.txId
       if (txId) setLastTxId(String(txId))
       const receiptToken = fr?.data?.receiptToken
       if (receiptToken) setLastReceiptToken(String(receiptToken))
+      // capture server-applied promo and redeemed amounts
+      try {
+        const serverPromo = Number(fr?.data?.promoDiscount || 0)
+        const serverRedeemed = Number(fr?.data?.redeemedAmount || 0)
+        setLastTransactionDiscount(Number.isFinite(serverPromo) ? serverPromo : 0)
+        setLastTransactionRedeemedAmount(Number.isFinite(serverRedeemed) ? serverRedeemed : 0)
+        // clear any client-side redeem selection
+        setRedeemPoints(0)
+      } catch {}
       // Refresh membership so receipt shows updated points
       try {
         if (membership && membership.membershipId) {
@@ -236,7 +258,7 @@ export default function PaymentScreen() {
         stopPolling()
         ;(async () => {
             try {
-            await finalizeBillplz({ billId: bill.billId, membershipId: membership?.membershipId, redeemedPoints: redeemPoints, promoCode: promoCode })
+              await finalizeBillplz({ billId: bill.billId, membershipId: membership?.membershipId, redeemedPoints: redeemPoints, promoCode: promoCode, amount: (bill && bill.amountCents) ? (Number(bill.amountCents) / 100) : undefined })
           } catch (e) {
             console.error('Finalize Billplz (RTDB) failed', e)
             setError(e?.message || 'Payment was received but failed to record transaction')
@@ -280,11 +302,17 @@ export default function PaymentScreen() {
         stationId,
         amount: effectiveAmount,
         description: `RFID Checkout - ${stationId} (${cart.length} item(s))`,
+        items: cart,
+        // Include membership / redemption / promo metadata so server and bill records match
+        membershipId: membership?.membershipId || null,
+        redeemedPoints: Number(redeemPoints || 0),
+        discountAmount: Number(discountAmount || 0),
+        promoCode: promoCode || null,
       })
 
       const data = res?.data || {}
       if (!data.billId || !data.billUrl) throw new Error('Invalid Billplz response')
-      const nextBill = { billId: String(data.billId), billUrl: String(data.billUrl) }
+      const nextBill = { billId: String(data.billId), billUrl: String(data.billUrl), amountCents: data.amountCents }
       setBill(nextBill)
 
       // Start polling
@@ -311,7 +339,7 @@ export default function PaymentScreen() {
           if (s.paid) {
             stopPolling()
               try {
-              await finalizeBillplz({ billId: nextBill.billId, membershipId: membership?.membershipId, redeemedPoints: redeemPoints, promoCode: promoCode })
+              await finalizeBillplz({ billId: nextBill.billId, membershipId: membership?.membershipId, redeemedPoints: redeemPoints, promoCode: promoCode, amount: nextBill.amountCents ? (Number(nextBill.amountCents) / 100) : undefined })
             } catch (e) {
               console.error('Finalize Billplz transaction failed', e)
               setError(e?.message || 'Payment was received but failed to record transaction')
@@ -600,43 +628,111 @@ export default function PaymentScreen() {
           </Alert>
 
           {membership && membership.name ? (
-            <Paper variant="outlined" sx={{ mt: 1.5, p: 1, borderColor: 'divider' }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2 }}>
+            <Paper variant="outlined" sx={{ mt: 1.5, p: 2, borderColor: 'divider' }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, flexWrap: 'wrap' }}>
                 <Box>
                   <Typography variant="subtitle2" sx={{ fontWeight: 900 }}>Member</Typography>
-                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>{membership.name} • {typeof membership.points === 'number' ? `${membership.points} pts` : '—'}</Typography>
+                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>{membership.name}</Typography>
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>{typeof membership.points === 'number' ? `${membership.points} pts available` : 'Points: —'}</Typography>
                 </Box>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <TextField
-                    label="Redeem points"
-                    type="number"
-                    size="small"
-                    value={redeemPoints || 0}
-                    onChange={(e) => setRedeemPoints(Math.max(0, Math.floor(Number(e.target.value || 0))))}
-                    inputProps={{ min: 0, max: membership?.points || 0 }}
-                    sx={{ width: 160 }}
-                  />
-                  <Button onClick={() => setRedeemPoints(Math.min(Number(membership?.points || 0), Math.floor(Number(amount || 0) / POINT_TO_MYR)))} size="small" variant="outlined">Max</Button>
-                </Box>
-              </Box>
-                <Box sx={{ mt: 1, display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <TextField size="small" label="Promo code" value={promoCode} onChange={(e) => setPromoCode(e.target.value)} sx={{ width: 160 }} />
-                  <Button size="small" variant="outlined" onClick={async () => {
-                    setPromoChecking(true)
-                    try {
-                      const validate = httpsCallable(fns, 'validatePromoCode')
-                      const res = await validate({ code: promoCode, subtotal: amount, stationId })
-                      const d = res?.data || {}
-                      if (d?.valid) setPromoPreview(d)
-                      else setPromoPreview({ valid: false, reason: d?.reason || 'invalid' })
-                    } catch (err) {
-                      setPromoPreview({ valid: false, reason: err?.message || 'failed' })
-                    } finally { setPromoChecking(false) }
-                  }}>Apply</Button>
-                  <Box sx={{ ml: 1 }}>
-                    <Typography variant="caption" sx={{ color: 'text.secondary' }}>Discount: {formatMoney(promoDiscount + Number(discountAmount || 0))} • Payable: {effectiveLabel}</Typography>
+
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25, width: '100%' }}>
+                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'stretch', width: '100%' }}>
+                    <TextField
+                      label="Redeem points"
+                      type="text"
+                      size="small"
+                      value={redeemInput}
+                      onChange={(e) => {
+                        const v = String(e.target.value || '')
+                        const cleaned = v.replace(/[^0-9]/g, '')
+                        setRedeemInput(cleaned)
+                      }}
+                      onBlur={() => {
+                        const parsed = Math.max(0, Math.floor(Number(redeemInput || 0) || 0))
+                        const clamped = Math.min(Number(membership?.points || 0), parsed)
+                        setRedeemInput(String(clamped))
+                        try { setRedeemPoints(clamped) } catch {}
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const parsed = Math.max(0, Math.floor(Number(redeemInput || 0) || 0))
+                          const clamped = Math.min(Number(membership?.points || 0), parsed)
+                          setRedeemInput(String(clamped))
+                          try { setRedeemPoints(clamped) } catch {}
+                        }
+                      }}
+                      inputProps={{ inputMode: 'numeric', pattern: '[0-9]*', min: 0, max: membership?.points || 0 }}
+                        sx={{
+                          flex: 1,
+                          '& .MuiOutlinedInput-root': { height: 44 },
+                          '& .MuiInputBase-input': { padding: '10px 12px' }
+                        }}
+                    />
+                      <Button onClick={() => {
+                        const max = Math.min(Number(membership?.points || 0), Math.floor(Number(amount || 0) / POINT_TO_MYR))
+                        setRedeemInput(String(max))
+                        try { setRedeemPoints(max) } catch {}
+                      }} size="small" variant="outlined" sx={{ height: 44, py: 0, px: 1.25, fontSize: 13, minWidth: 64, borderRadius: 1 }}>
+                      Max
+                    </Button>
                   </Box>
                 </Box>
+              </Box>
+
+              <Box sx={{ mt: 2, display: 'flex', gap: 1, alignItems: 'stretch', width: '100%' }}>
+                <TextField size="small" label="Promo code" value={promoCode} onChange={(e) => setPromoCode(e.target.value)} sx={{ flex: 1, '& .MuiOutlinedInput-root': { height: 44 }, '& .MuiInputBase-input': { padding: '10px 12px' } }} />
+                <Button size="small" variant="outlined" sx={{ height: 44, py: 0, px: 1.25, fontSize: 13, minWidth: 64, borderRadius: 1 }} onClick={async () => {
+                  setPromoChecking(true)
+                  try {
+                    const validate = httpsCallable(fns, 'validatePromoCode')
+                    const res = await validate({ code: promoCode, subtotal: amount, stationId, membershipId: membership?.id || membership?.membershipId || membership?.uid || '' })
+                    const d = res?.data || {}
+                    if (d?.valid) setPromoPreview(d)
+                    else setPromoPreview({ valid: false, reason: d?.reason || 'invalid', message: d?.reason === 'already_used' ? 'You have already used this discount.' : (d?.reason === 'exhausted' ? 'Discount has reached maximum uses.' : null) })
+                  } catch (err) {
+                    setPromoPreview({ valid: false, reason: err?.message || 'failed' })
+                  } finally { setPromoChecking(false) }
+                }}>Apply</Button>
+                {promoChecking ? <CircularProgress size={18} sx={{ alignSelf: 'center' }} /> : null}
+              </Box>
+
+              <Box sx={{ mt: 2, borderTop: '1px dashed', borderColor: 'divider', pt: 2, display: 'grid', gap: 1.25 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>Subtotal</Typography>
+                  <Typography variant="caption" sx={{ fontWeight: 800 }}>{formatMoney(amount)}</Typography>
+                </Box>
+
+                {promoPreview && promoPreview.valid ? (
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <Typography variant="caption" sx={{ color: 'text.secondary' }}>{`Promo (${promoPreview.code || promoCode})`}</Typography>
+                    <Typography variant="caption" sx={{ fontWeight: 800, color: 'success.main' }}>-{formatMoney(Number(promoPreview.discountAmount || 0))}</Typography>
+                  </Box>
+                ) : null}
+
+                {(discountAmount && Number(discountAmount) > 0) || (redeemPoints && Number(redeemPoints) > 0) ? (
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <Typography variant="caption" sx={{ color: 'text.secondary' }}>{`Redeemed (${redeemPoints || 0} pts)`}</Typography>
+                    <Typography variant="caption" sx={{ fontWeight: 800, color: 'warning.main' }}>-{formatMoney(Number(discountAmount || 0))}</Typography>
+                  </Box>
+                ) : null}
+
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid', borderColor: 'divider', pt: 1 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 900 }}>Total Discount</Typography>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 900, color: 'text.secondary' }}>-{formatMoney((promoPreview?.discountAmount || 0) + Number(discountAmount || 0))}</Typography>
+                </Box>
+
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 1 }}>
+                  <Typography variant="h6" sx={{ fontWeight: 900 }}>Payable</Typography>
+                  <Typography variant="h4" sx={{ fontWeight: 950, color: '#a259ff' }}>{effectiveLabel}</Typography>
+                </Box>
+              </Box>
+
+              {promoPreview && promoPreview.valid === false ? (
+                <Box sx={{ mt: 1 }}>
+                  <Typography variant="caption" color="error">{promoPreview.message || `Promo invalid: ${promoPreview.reason}`}</Typography>
+                </Box>
+              ) : null}
             </Paper>
           ) : null}
 

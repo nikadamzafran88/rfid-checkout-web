@@ -236,13 +236,20 @@ exports.createPromoCode = region.https.onCall(async (data, context) => {
   const maxUses = Number.isFinite(Number(data?.maxUses)) && Number(data.maxUses) > 0 ? Math.floor(Number(data.maxUses)) : 0
   const stations = Array.isArray(data?.stations) ? data.stations.map(s => String(s).trim()).filter(Boolean) : []
   const expiresAt = data?.expiresAt ? new Date(data.expiresAt) : null
+  const startsAt = data?.startsAt ? new Date(data.startsAt) : null
 
   if (!codeRaw) throw new functions.https.HttpsError('invalid-argument', 'code is required')
   if (value <= 0) throw new functions.https.HttpsError('invalid-argument', 'value must be positive')
 
   const code = String(codeRaw).toUpperCase()
   const now = admin.firestore.FieldValue.serverTimestamp()
-
+  // Determine initial active state: if startsAt is in the future, mark inactive until start.
+  let activeFlag = true
+  try {
+    if (startsAt && startsAt instanceof Date && !Number.isNaN(startsAt.getTime())) {
+      activeFlag = Date.now() >= startsAt.getTime()
+    }
+  } catch {}
   const doc = {
     code,
     type,
@@ -251,7 +258,8 @@ exports.createPromoCode = region.https.onCall(async (data, context) => {
     uses: 0,
     stations: stations,
     expiresAt: expiresAt ? admin.firestore.Timestamp.fromDate(expiresAt) : null,
-    active: true,
+    startsAt: startsAt ? admin.firestore.Timestamp.fromDate(startsAt) : null,
+    active: !!activeFlag,
     createdBy: context.auth.uid,
     createdAt: now,
   }
@@ -270,6 +278,7 @@ exports.validatePromoCode = region.https.onCall(async (data, _context) => {
   const codeRaw = data?.code ? String(data.code).trim() : ''
   const subtotal = Number.isFinite(Number(data?.subtotal)) ? Number(data.subtotal) : 0
   const stationId = data?.stationId ? String(data.stationId).trim() : ''
+  const membershipId = data?.membershipId ? String(data.membershipId).trim() : ''
 
   if (!codeRaw) return { valid: false, reason: 'missing_code' }
   const code = String(codeRaw).toUpperCase()
@@ -280,6 +289,16 @@ exports.validatePromoCode = region.https.onCall(async (data, _context) => {
   if (dataDoc.expiresAt && dataDoc.expiresAt.toMillis && Date.now() > dataDoc.expiresAt.toMillis()) return { valid: false, reason: 'expired' }
   if (Array.isArray(dataDoc.stations) && dataDoc.stations.length > 0 && stationId && !dataDoc.stations.includes(stationId)) return { valid: false, reason: 'not_allowed_at_station' }
   if (dataDoc.maxUses && Number(dataDoc.maxUses) > 0 && (Number(dataDoc.uses || 0) >= Number(dataDoc.maxUses))) return { valid: false, reason: 'exhausted' }
+
+  // If promo is restricted to one use per customer, check existing transactions for this membership.
+  try {
+    if (dataDoc.onePerCustomer && membershipId) {
+      const q = await db.collection('transactions').where('promoCode', '==', code).where('membershipId', '==', membershipId).limit(1).get();
+      if (!q.empty) return { valid: false, reason: 'already_used' }
+    }
+  } catch (err) {
+    console.warn('validatePromoCode membership check failed', err)
+  }
 
   let discountAmount = 0
   if (dataDoc.type === 'percent') {
@@ -299,6 +318,114 @@ exports.validatePromoCode = region.https.onCall(async (data, _context) => {
     uses: dataDoc.uses || 0,
     expiresAt: dataDoc.expiresAt ? dataDoc.expiresAt.toMillis() : null,
   }
+})
+
+// Analyze a member using Gemini (server-side) and store structured results
+// Bind secret `GEMINI_API_KEY` via Firebase Secrets so it is available in `process.env.GEMINI_API_KEY`.
+exports.analyzeMember = region.runWith({ secrets: ['GEMINI_API_KEY'] }).https.onCall(async (data, context) => {
+  // allow staff/admin/manager
+  await requireRole(context, ['admin', 'manager', 'staff'])
+
+  const memberId = data?.memberId ? String(data.memberId).trim() : ''
+  const promptOverride = data?.prompt ? String(data.prompt) : ''
+  const scope = data?.scope ? String(data.scope) : 'summary'
+
+  if (!memberId) throw new functions.https.HttpsError('invalid-argument', 'memberId is required')
+
+  // Load member
+  const memberRef = db.collection('memberships').doc(memberId)
+  const memberSnap = await memberRef.get()
+  if (!memberSnap.exists) throw new functions.https.HttpsError('not-found', 'Member not found')
+  const member = memberSnap.data() || {}
+
+  // Load recent transactions (top-level)
+  let txs = []
+  try {
+    const tq = db.collection('transactions').where('membershipId', '==', memberId).orderBy('timestamp', 'desc').limit(80)
+    const tsnap = await tq.get()
+    txs = tsnap.docs.map((d) => ({ id: d.id, ...d.data() }))
+  } catch (e) {
+    // ignore errors; continue with empty txs
+    console.warn('analyzeMember: transactions query failed', e)
+    txs = []
+  }
+
+  // Load membership ledger entries
+  let ledger = []
+  try {
+    const lcol = db.collection('memberships').doc(memberId).collection('transactions')
+    const lsnap = await lcol.orderBy('timestamp', 'desc').limit(120).get()
+    ledger = lsnap.docs.map((d) => ({ id: d.id, ...d.data() }))
+  } catch (e) {
+    console.warn('analyzeMember: ledger query failed', e)
+    ledger = []
+  }
+
+  // Build default prompt if none provided
+  let prompt = promptOverride && promptOverride.length ? promptOverride : null
+  if (!prompt) {
+    const lines = []
+    lines.push(`You are a helpful analyst. Produce a concise JSON with keys: summary (string), suggestions (array), flags (array).`)
+    lines.push(`Member ID: ${memberId}`)
+    if (member.name) lines.push(`Name: ${member.name}`)
+    if (member.phone) lines.push(`Phone: ${member.phone}`)
+    lines.push(`Points: ${member.points || 0}, Lifetime Spend: RM ${Number(member.lifetimeSpend || 0).toFixed(2)}`)
+    lines.push('\nRecent transactions:')
+    for (const t of txs.slice(0, 20)) {
+      const subtotal = (t.subtotalAmount ?? t.subtotal_amount ?? t.subtotal) ?? 0
+      const promo = (t.promoCode || t.promo || '—')
+      const redeemed = t.redeemedAmount ?? (t.redeemed || 0)
+      let total = t.totalAmount ?? t.total_amount ?? t.amount
+      if (total == null) {
+        total = t.amountCents ? t.amountCents / 100 : 0
+      }
+      const pdPaid = t.paymentDetails ? (t.paymentDetails.paid_at || t.paymentDetails.paidAt) : null
+      const paidAt = pdPaid || t.paidAt || t.timestamp || t.createdAt || '—'
+      lines.push(`- ${t.id}: subtotal RM ${subtotal}, promo ${promo}, redeemed RM ${redeemed}, paid RM ${total}, at ${paidAt}`)
+    }
+    lines.push('\nMembership ledger entries:')
+    for (const l of ledger.slice(0, 20)) {
+      const lAmount = l.amount != null ? l.amount : (l.amount_cents ? l.amount_cents / 100 : 0)
+      const lType = l.type || l.kind || 'entry'
+      const lTime = l.timestamp || l.createdAt || '—'
+      lines.push(`- ${l.id}: ${lType} RM ${Number(lAmount).toFixed(2)} at ${lTime}`)
+    }
+    lines.push('\nInstructions: Assess buying frequency, promo responsiveness, likely churn/risk flags, and recommended engagement actions. Return JSON only.')
+    prompt = lines.join('\n')
+  }
+
+  // Call Gemini
+  let rawText
+  try {
+    const apiKey = getGeminiApiKey()
+    rawText = await geminiGenerateText({ apiKey, model: 'gemini-1.5-flash', prompt })
+  } catch (e) {
+    console.error('analyzeMember: geminiGenerateText failed', e)
+    throw e
+  }
+
+  // Try to extract JSON and normalize
+  const extracted = extractFirstJsonObject(rawText)
+  const structured = normalizeAiStructured(extracted)
+
+  // Save result under memberships/{memberId}/analysis/{runId}
+  const runRef = db.collection('memberships').doc(memberId).collection('analysis').doc()
+  const docData = {
+    prompt: prompt.substring(0, 10000),
+    raw: rawText,
+    structured: structured || null,
+    createdBy: context.auth.uid || null,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    scope: scope,
+  }
+
+  try {
+    await runRef.set(docData)
+  } catch (e) {
+    console.warn('analyzeMember: failed to persist analysis', e)
+  }
+
+  return { raw: rawText, structured: structured || null, runId: runRef.id }
 })
 
 function getAllowedWebOrigins() {
@@ -1035,6 +1162,8 @@ exports.generateAiExecutiveSummaryHttp = region.https.onRequest(async (req, res)
 
     const isForecastExplain = scope === "sales-forecast-explain";
 
+    const isMemberAnalysis = scope === 'member-details' || (sales && typeof sales === 'object' && sales.member);
+
     const prompt = (isForecastExplain ? [
       "You are a senior retail analyst helping a store manager understand a simple sales forecast.",
       `Audience: ${safeAudience}. Currency: ${currency}.`,
@@ -1057,26 +1186,47 @@ exports.generateAiExecutiveSummaryHttp = region.https.onRequest(async (req, res)
       "- If R² is missing or points used < 7, confidence should be low/medium.",
       "DATA (JSON):",
       json,
-    ] : [
-      "You are a senior retail operations analyst.",
-      `Audience: ${safeAudience}. Currency: ${currency}.`,
-      "Task: Explain the WHY behind performance, not only the numbers.",
-      "You MUST return valid JSON only (no markdown, no code fences, no extra text).",
-      "JSON schema:",
-      "{",
-      '  "headline": "One short sentence.",',
-      '  "whatChanged": "1-2 sentences on what changed (include key deltas if present).",',
-      '  "whyLikely": "1-2 sentences on likely causes using the signals provided.",',
-      '  "whatToDoNext": ["Action 1", "Action 2", "Action 3"],',
-      '  "riskFlag": "none|low|medium|high"',
-      "}",
-      "Rules:",
-      "- Be practical and specific. If a field is missing, omit it.",
-      "- Prefer the provided signals; do not invent facts.",
-      "- Keep actions short and executable.",
-      "DATA (JSON):",
-      json,
-    ]).join("\n");
+    ] : (
+      isMemberAnalysis ? [
+        "You are a customer-behaviour analyst specialising in memberships and loyalty.",
+        `Audience: ${safeAudience || 'customer'}. Currency: ${currency}.`,
+        "Task: Analyse the customer's behaviour and return a concise, actionable JSON using the following schema. Use the data to fill in each field as best as possible:",
+        "You MUST return valid JSON only (no markdown, no code fences, no extra text).",
+        "JSON schema:",
+        "{",
+        '  "headline": "One short sentence summarising the member behaviour.",',
+        '  "whatChanged": "1-2 sentences on what changed in this member’s behaviour (e.g. frequency, spend, promo use, redemptions, etc.)",',
+        '  "whyLikely": "1-2 sentences on likely causes or patterns (e.g. promo responsiveness, redemption, churn risk)",',
+        '  "whatToDoNext": ["Personalised offer 1", "Engagement action 2", "Retention action 3"],',
+        '  "riskFlag": "none|low|medium|high"',
+        "}",
+        "Rules:",
+        "- Use only the supplied data; do not invent personal details.",
+        "- If insufficient data, be conservative and mark confidence low.",
+        "- Keep each recommendation short and operational (who, what, when).",
+        "DATA (JSON):",
+        json,
+      ] : [
+        "You are a senior retail operations analyst.",
+        `Audience: ${safeAudience}. Currency: ${currency}.`,
+        "Task: Explain the WHY behind performance, not only the numbers.",
+        "You MUST return valid JSON only (no markdown, no code fences, no extra text).",
+        "JSON schema:",
+        "{",
+        '  "headline": "One short sentence.",',
+        '  "whatChanged": "1-2 sentences on what changed (include key deltas if present).",',
+        '  "whyLikely": "1-2 sentences on likely causes using the signals provided.",',
+        '  "whatToDoNext": ["Action 1", "Action 2", "Action 3"],',
+        '  "riskFlag": "none|low|medium|high"',
+        "}",
+        "Rules:",
+        "- Be practical and specific. If a field is missing, omit it.",
+        "- Prefer the provided signals; do not invent facts.",
+        "- Keep actions short and executable.",
+        "DATA (JSON):",
+        json,
+      ]
+    )).join("\n");
 
     const apiKey = getGeminiApiKey();
     const text = await geminiGenerateText({ apiKey, model, prompt });
@@ -1261,10 +1411,14 @@ exports.createBillplzBill = region.https.onCall(async (data) => {
   }
 
   const stationId = data?.stationId ? String(data.stationId).trim() : "";
-  const amount = Number(data?.amount);
+  // If client provides items + promo/redeem metadata, compute server-side payable
+  const rawAmount = Number(data?.amount);
   const description = data?.description
     ? String(data.description).trim()
     : `RFID Checkout - ${stationId || "station"}`;
+  const items = Array.isArray(data?.items) ? normalizeReceiptItems(data.items) : null;
+  const promoCode = data?.promoCode ? String(data.promoCode).trim().toUpperCase() : '';
+  const clientDiscountAmount = Number.isFinite(Number(data?.discountAmount)) ? Number(data.discountAmount) : 0;
 
   if (!stationId) {
     throw new functions.https.HttpsError("invalid-argument", "stationId is required.");
@@ -1280,6 +1434,41 @@ exports.createBillplzBill = region.https.onCall(async (data) => {
     if (err instanceof functions.https.HttpsError) throw err;
     console.error("Station validation failed", err);
     throw new functions.https.HttpsError("internal", "Failed to validate station.");
+  }
+
+  // Determine final amount: if items present compute payable server-side to avoid rounding mismatches
+  let amount = rawAmount;
+  if (items && items.length > 0) {
+    let subtotal = 0;
+    for (const it of items) {
+      subtotal += (Number(it.price || 0) * Number(it.quantity || 1));
+    }
+    subtotal = Math.round(subtotal * 100) / 100;
+
+    // Compute promo discount server-side if promoCode provided
+    let promoDiscount = 0;
+    if (promoCode) {
+      const snap = await db.collection('promo_codes').doc(promoCode).get();
+      if (!snap.exists) throw new functions.https.HttpsError('failed-precondition', 'Promo code not found', { promoCode });
+      const pc = snap.data() || {};
+      if (!pc.active) throw new functions.https.HttpsError('failed-precondition', 'Promo code inactive', { promoCode });
+      if (pc.expiresAt && pc.expiresAt.toMillis && Date.now() > pc.expiresAt.toMillis()) throw new functions.https.HttpsError('failed-precondition', 'Promo code expired', { promoCode });
+      if (pc.maxUses && Number(pc.maxUses) > 0 && (Number(pc.uses || 0) >= Number(pc.maxUses))) throw new functions.https.HttpsError('failed-precondition', 'Promo code exhausted', { promoCode });
+      if (pc.type === 'percent') {
+        promoDiscount = Math.round((Number(subtotal || 0) * (Number(pc.value || 0) / 100)) * 100) / 100;
+      } else {
+        promoDiscount = Number(pc.value || 0);
+      }
+      if (!Number.isFinite(promoDiscount) || promoDiscount < 0) promoDiscount = 0;
+    }
+
+    const redeemedAmount = Number(clientDiscountAmount || 0);
+    const totalDiscount = Math.round(((Number(promoDiscount || 0) + Number(redeemedAmount || 0)) * 100)) / 100;
+    const expectedPayable = Math.round((Number(subtotal || 0) - Number(totalDiscount || 0)) * 100) / 100;
+    if (!Number.isFinite(expectedPayable) || expectedPayable <= 0) {
+      throw new functions.https.HttpsError("invalid-argument", "Computed payable is invalid or zero.");
+    }
+    amount = expectedPayable;
   }
 
   if (!Number.isFinite(amount) || amount <= 0) {
@@ -1327,6 +1516,11 @@ exports.createBillplzBill = region.https.onCall(async (data) => {
         state: bill.state || null,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         lastCheckedAt: admin.firestore.FieldValue.serverTimestamp(),
+        // Store optional metadata from client so finalize can validate/inspect
+        membershipId: data?.membershipId ? String(data.membershipId) : null,
+        redeemedPoints: Number.isFinite(Number(data?.redeemedPoints)) ? Math.max(0, Math.floor(Number(data.redeemedPoints))) : 0,
+        discountAmount: Number.isFinite(Number(data?.discountAmount)) ? Number(data.discountAmount) : 0,
+        promoCode: data?.promoCode ? String(data.promoCode).trim().toUpperCase() : null,
       },
       { merge: true }
     );
@@ -1529,22 +1723,24 @@ exports.recordTransactionAndDecrement = region.https.onCall(async (data, context
     const invRes = await applyInventoryDecrementInTransaction(t, items);
     const txRef = db.collection("transactions").doc();
 
-    // Determine discountAmount (server authoritative)
-    let discountAmount = Number(clientDiscountAmount || 0);
+    // Determine promo discount (server authoritative) and redemption discount separately
+    let promoDiscount = 0;
+    let redeemedAmount = Number(clientDiscountAmount || 0); // client-supplied redeem amount (from points)
     if (promoSnap && promoSnap.exists) {
       const pc = promoSnap.data() || {};
       if (!pc.active) throw new functions.https.HttpsError('failed-precondition', 'Promo code inactive', { promoCode });
       if (pc.expiresAt && pc.expiresAt.toMillis && Date.now() > pc.expiresAt.toMillis()) throw new functions.https.HttpsError('failed-precondition', 'Promo code expired', { promoCode });
       if (pc.maxUses && Number(pc.maxUses) > 0 && (Number(pc.uses || 0) >= Number(pc.maxUses))) throw new functions.https.HttpsError('failed-precondition', 'Promo code exhausted', { promoCode });
       if (pc.type === 'percent') {
-        discountAmount = Math.round((Number(amount || 0) * (Number(pc.value || 0) / 100)) * 100) / 100;
+        promoDiscount = Math.round((Number(amount || 0) * (Number(pc.value || 0) / 100)) * 100) / 100;
       } else {
-        discountAmount = Number(pc.value || 0);
+        promoDiscount = Number(pc.value || 0);
       }
-      if (!Number.isFinite(discountAmount) || discountAmount < 0) discountAmount = 0;
+      if (!Number.isFinite(promoDiscount) || promoDiscount < 0) promoDiscount = 0;
     }
 
-    const effectiveAmount = Math.round((Number(amount || 0) - Number(discountAmount || 0)) * 100) / 100;
+    const totalDiscount = Math.round(((Number(promoDiscount || 0) + Number(redeemedAmount || 0)) * 100)) / 100;
+    const effectiveAmount = Math.round((Number(amount || 0) - Number(totalDiscount || 0)) * 100) / 100;
     if (!Number.isFinite(effectiveAmount) || effectiveAmount < 0) {
       throw new functions.https.HttpsError("invalid-argument", "Invalid discount/amount resulting in negative payable amount.");
     }
@@ -1568,7 +1764,9 @@ exports.recordTransactionAndDecrement = region.https.onCall(async (data, context
       paymentDetails: paymentDetails,
       payment_details: paymentDetails,
       redeemedPoints: redeemedPoints,
-      discountAmount: discountAmount,
+      redeemedAmount: redeemedAmount,
+      promoDiscount: promoDiscount,
+      discountAmount: totalDiscount,
       inventoryDecremented: true,
       inventoryDecrementSource: "callable:recordTransactionAndDecrement",
       inventoryDecrementedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1582,8 +1780,10 @@ exports.recordTransactionAndDecrement = region.https.onCall(async (data, context
       stationId,
       subtotalAmount: amount,
       totalAmount: effectiveAmount,
-      discountAmount: discountAmount,
+      discountAmount: totalDiscount,
+      promoDiscount: promoDiscount,
       redeemedPoints: redeemedPoints,
+      redeemedAmount: redeemedAmount,
       paymentStatus,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       timestamp: nowMs,
@@ -1592,7 +1792,7 @@ exports.recordTransactionAndDecrement = region.https.onCall(async (data, context
 
     // If promo was used, record it on the transaction and increment uses
     if (promoSnap && promoSnap.exists) {
-      t.update(txRef, { promoCode: promoCode, discountAmount: discountAmount });
+      t.update(txRef, { promoCode: promoCode, promoDiscount: promoDiscount, discountAmount: totalDiscount });
       const prevUses = Number(promoSnap.data()?.uses || 0);
       const maxUses = Number(promoSnap.data()?.maxUses || 0);
       t.update(promoRef, { uses: prevUses + 1 });
@@ -1616,22 +1816,22 @@ exports.recordTransactionAndDecrement = region.https.onCall(async (data, context
           const prevLifetimeSpend = Number(memData.lifetimeSpend || 0);
           const now = admin.firestore.FieldValue.serverTimestamp();
 
-          if (redeemedPoints > 0) {
+            if (redeemedPoints > 0) {
             const available = prevPoints;
             if (available < redeemedPoints) {
               throw new functions.https.HttpsError('failed-precondition', 'Insufficient membership points for redemption', { available, requested: redeemedPoints });
             }
-            t.update(memRef, { points: available - redeemedPoints, updatedAt: now });
-            const redeemLedgerRef = memRef.collection('transactions').doc(`${txRef.id}_redeem`);
-            t.set(redeemLedgerRef, {
-              txId: txRef.id,
-              type: 'redeem',
-              pointsDelta: -Math.abs(redeemedPoints),
-              amount: Number(discountAmount || 0),
-              reason: 'redeem',
-              source: 'kiosk',
-              timestamp: now,
-            });
+              t.update(memRef, { points: available - redeemedPoints, updatedAt: now });
+              const redeemLedgerRef = memRef.collection('transactions').doc(`${txRef.id}_redeem`);
+              t.set(redeemLedgerRef, {
+                txId: txRef.id,
+                type: 'redeem',
+                pointsDelta: -Math.abs(redeemedPoints),
+                amount: Number(redeemedAmount || 0),
+                reason: 'redeem',
+                source: 'kiosk',
+                timestamp: now,
+              });
           }
 
           // Award points on the effective amount (after discount)
@@ -1662,10 +1862,10 @@ exports.recordTransactionAndDecrement = region.https.onCall(async (data, context
       console.warn('awardPointsInTransaction failed', e);
     }
 
-    return { txId: txRef.id, receiptToken };
+    return { txId: txRef.id, receiptToken, discountAmount: totalDiscount, promoDiscount, redeemedAmount };
   });
 
-  return { txId: result.txId, receiptToken: result.receiptToken };
+  return { txId: result.txId, receiptToken: result.receiptToken, discountAmount: result.discountAmount, promoDiscount: result.promoDiscount || 0, redeemedAmount: result.redeemedAmount || 0 };
 });
 
 // Stripe Checkout
@@ -1819,6 +2019,22 @@ exports.finalizeBillplzTransaction = region.https.onCall(async (data, context) =
     throw new functions.https.HttpsError("permission-denied", "Unknown stationId.");
   }
 
+  // Debug logging: record incoming payloads to help diagnose mismatches and 500s.
+  try {
+    functions.logger.info('finalizeBillplzTransaction called', {
+      stationId,
+      billId,
+      amount,
+      membershipId,
+      redeemedPoints,
+      clientDiscountAmount,
+      promoCode,
+      itemsCount: Array.isArray(items) ? items.length : 0,
+    });
+  } catch (e) {
+    // Ignore logging failures
+  }
+
   const bill = await billplzRequest(`/bills/${encodeURIComponent(billId)}`, { method: "GET" });
 
   const paid = Boolean(bill?.paid);
@@ -1886,7 +2102,7 @@ exports.finalizeBillplzTransaction = region.https.onCall(async (data, context) =
       amount_cents: amountCents,
     },
     redeemedPoints: redeemedPoints,
-    discountAmount: discountAmount,
+    discountAmount: clientDiscountAmount,
   };
 
   const billRef = db.collection("billplz_bills").doc(String(billId));
@@ -1895,6 +2111,9 @@ exports.finalizeBillplzTransaction = region.https.onCall(async (data, context) =
     const billSnap = await t.get(billRef);
     const existingTxId = billSnap.exists ? billSnap.data()?.tx_id : null;
     const existingReceiptToken = billSnap.exists ? billSnap.data()?.receipt_token : null;
+    const persistedBillData = billSnap.exists ? (billSnap.data() || {}) : {};
+    const persistedDiscountAmount = Number.isFinite(Number(persistedBillData.discountAmount)) ? Number(persistedBillData.discountAmount) : 0;
+    const persistedRedeemedPoints = Number.isFinite(Number(persistedBillData.redeemedPoints)) ? Math.max(0, Math.floor(Number(persistedBillData.redeemedPoints))) : 0;
 
     if (existingTxId) {
       t.set(
@@ -1931,45 +2150,78 @@ exports.finalizeBillplzTransaction = region.https.onCall(async (data, context) =
 
     const txRef = db.collection("transactions").doc();
 
-    // Determine discountAmount server-side (promo codes override client value)
-    let discountAmount = Number(clientDiscountAmount || 0);
+    // Normalize items and compute server-side subtotal (so percent promos are based on subtotal)
+    const normalizedItems = normalizeReceiptItems(items);
+    let subtotal = 0;
+    for (const it of normalizedItems) {
+      subtotal += (Number(it.price || 0) * Number(it.quantity || 1));
+    }
+    subtotal = Math.round(subtotal * 100) / 100;
+
+    // Use client-supplied discount/points, but fall back to persisted bill metadata when missing.
+    let redeemedAmount = Number(clientDiscountAmount || 0);
+    let effectiveRedeemedPoints = Number(redeemedPoints || 0);
+    if ((!Number.isFinite(redeemedAmount) || redeemedAmount === 0) && persistedDiscountAmount > 0) {
+      redeemedAmount = persistedDiscountAmount;
+    }
+    if ((!Number.isFinite(effectiveRedeemedPoints) || effectiveRedeemedPoints === 0) && persistedRedeemedPoints > 0) {
+      effectiveRedeemedPoints = persistedRedeemedPoints;
+    }
+    let promoDiscount = 0;
     if (promoSnap && promoSnap.exists) {
       const pc = promoSnap.data() || {};
       if (!pc.active) throw new functions.https.HttpsError('failed-precondition', 'Promo code inactive', { promoCode });
       if (pc.expiresAt && pc.expiresAt.toMillis && Date.now() > pc.expiresAt.toMillis()) throw new functions.https.HttpsError('failed-precondition', 'Promo code expired', { promoCode });
       if (pc.maxUses && Number(pc.maxUses) > 0 && (Number(pc.uses || 0) >= Number(pc.maxUses))) throw new functions.https.HttpsError('failed-precondition', 'Promo code exhausted', { promoCode });
       if (pc.type === 'percent') {
-        discountAmount = Math.round((Number(amount || 0) * (Number(pc.value || 0) / 100)) * 100) / 100;
+        promoDiscount = Math.round((Number(subtotal || 0) * (Number(pc.value || 0) / 100)) * 100) / 100;
       } else {
-        discountAmount = Number(pc.value || 0);
+        promoDiscount = Number(pc.value || 0);
       }
-      if (!Number.isFinite(discountAmount) || discountAmount < 0) discountAmount = 0;
+      if (!Number.isFinite(promoDiscount) || promoDiscount < 0) promoDiscount = 0;
     }
 
-    const effectiveAmount = Math.round((Number(amount || 0) - Number(discountAmount || 0)) * 100) / 100;
-    if (!Number.isFinite(effectiveAmount) || effectiveAmount < 0) {
+    const totalDiscount = Math.round(((Number(promoDiscount || 0) + Number(redeemedAmount || 0)) * 100)) / 100;
+    const expectedPayable = Math.round((Number(subtotal || 0) - Number(totalDiscount || 0)) * 100) / 100;
+    // Ensure the client-supplied billed amount matches subtotal minus discounts
+    if (!Number.isFinite(expectedPayable) || expectedPayable < 0) {
       throw new functions.https.HttpsError('invalid-argument', 'Invalid discount/amount resulting in negative payable amount.');
     }
 
+    if (Math.round(Number(amount || 0) * 100) / 100 !== expectedPayable) {
+      throw new functions.https.HttpsError('failed-precondition', 'Billed amount does not match subtotal minus discounts.', {
+        billedAmount: Number(amount || 0),
+        expectedPayable,
+        subtotal,
+        promoDiscount,
+        redeemedAmount,
+      });
+    }
+
     const receiptToken = generateReceiptToken();
-    t.set(txRef, { ...tx, subtotalAmount: amount, subtotal_amount: amount, totalAmount: effectiveAmount, total_amount: effectiveAmount, receiptToken, receipt_token: receiptToken, discountAmount, redeemedPoints });
+    // Store subtotal (original), totalAmount is the billed/paid amount
+    t.set(txRef, { ...tx, membershipId: membershipId || null, membership_id: membershipId || null, subtotalAmount: subtotal, subtotal_amount: subtotal, totalAmount: Number(amount || 0), total_amount: Number(amount || 0), receiptToken, receipt_token: receiptToken, promoDiscount, redeemedAmount, discountAmount: totalDiscount, redeemedPoints: effectiveRedeemedPoints });
 
     const publicRef = db.collection('public_receipts').doc(receiptToken);
     t.set(publicRef, {
       txId: txRef.id,
       stationId,
-      totalAmount: effectiveAmount,
-      discountAmount: discountAmount,
-      redeemedPoints: redeemedPoints,
+      membershipId: membershipId || null,
+      subtotalAmount: subtotal,
+      totalAmount: Number(amount || 0),
+      discountAmount: totalDiscount,
+      promoDiscount: promoDiscount,
+      redeemedPoints: effectiveRedeemedPoints,
+      redeemedAmount: redeemedAmount,
       paymentStatus: 'Paid (Billplz)',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       timestamp: nowMs,
-      items: normalizeReceiptItems(items),
+      items: normalizedItems,
     });
 
     // If promo was used, record code on tx and increment usage
     if (promoSnap && promoSnap.exists) {
-      t.update(txRef, { promoCode: promoCode });
+      t.update(txRef, { promoCode: promoCode, promoDiscount: promoDiscount, discountAmount: totalDiscount });
       const prevUses = Number(promoSnap.data()?.uses || 0);
       t.update(promoRef, { uses: prevUses + 1 });
     }
@@ -2007,31 +2259,31 @@ exports.finalizeBillplzTransaction = region.https.onCall(async (data, context) =
           const now = admin.firestore.FieldValue.serverTimestamp();
 
           // Redemption: validate and deduct points if requested
-          if (redeemedPoints > 0) {
+          if (effectiveRedeemedPoints > 0) {
             const available = prevPoints;
-            if (available < redeemedPoints) {
-              throw new functions.https.HttpsError('failed-precondition', 'Insufficient membership points for redemption', { available, requested: redeemedPoints });
+            if (available < effectiveRedeemedPoints) {
+              throw new functions.https.HttpsError('failed-precondition', 'Insufficient membership points for redemption', { available, requested: effectiveRedeemedPoints });
             }
-            t.update(memRef, { points: available - redeemedPoints, updatedAt: now });
+            t.update(memRef, { points: available - effectiveRedeemedPoints, updatedAt: now });
             const redeemLedgerRef = memRef.collection('transactions').doc(`${txRef.id}_redeem`);
             t.set(redeemLedgerRef, {
               txId: txRef.id,
               type: 'redeem',
-              pointsDelta: -Math.abs(redeemedPoints),
-              amount: Number(discountAmount || 0),
+              pointsDelta: -Math.abs(effectiveRedeemedPoints),
+              amount: Number(redeemedAmount || 0),
               reason: 'redeem',
               source: 'kiosk',
               timestamp: now,
             });
           }
 
-          // Award points based on paid amount after discount
-          const awardableAmount = Math.max(0, Number(amount || 0) - Number(discountAmount || 0));
+          // Award points based on the paid amount (billed `amount`)
+          const awardableAmount = Math.max(0, Number(amount || 0));
           const pointsToAward = Math.max(0, Math.floor(Number(awardableAmount) || 0));
           if (pointsToAward > 0) {
             functions.logger.info('finalizeBillplzTransaction awarding points', { membershipId, txId: txRef.id, awardableAmount, pointsToAward });
             t.update(memRef, {
-              points: prevPoints - Math.max(0, redeemedPoints) + pointsToAward,
+              points: prevPoints - Math.max(0, effectiveRedeemedPoints) + pointsToAward,
               lifetimePoints: prevLifetimePoints + pointsToAward,
               lifetimeSpend: prevLifetimeSpend + Number(awardableAmount || 0),
               updatedAt: now,
@@ -2053,7 +2305,7 @@ exports.finalizeBillplzTransaction = region.https.onCall(async (data, context) =
       console.warn('award/redeem handling (finalizeBillplz) failed', e);
     }
 
-    return { txId: txRef.id, alreadyFinalized: false, receiptToken };
+    return { txId: txRef.id, alreadyFinalized: false, receiptToken, discountAmount: totalDiscount, promoDiscount, redeemedAmount };
   });
 
   return {
@@ -2061,5 +2313,8 @@ exports.finalizeBillplzTransaction = region.https.onCall(async (data, context) =
     receiptToken: result.receiptToken || null,
     billId: String(billId),
     alreadyFinalized: Boolean(result.alreadyFinalized),
+    discountAmount: result.discountAmount || 0,
+    promoDiscount: result.promoDiscount || 0,
+    redeemedAmount: result.redeemedAmount || 0,
   };
 });

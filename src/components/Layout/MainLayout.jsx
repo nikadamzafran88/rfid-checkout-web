@@ -72,8 +72,9 @@ const MainLayout = () => {
           Icon: ShoppingCart,
           children: [
             { to: '/admin/products/master', label: 'Product Master' },
-            { to: '/admin/products/tags', label: 'Tag UID Link' },
-            { to: '/admin/products/items', label: 'Product Items' },
+                { to: '/admin/products/tags', label: 'Tag UID Link' },
+                { to: '/admin/products/tagging-batches', label: 'Tagging Batches' },
+                { to: '/admin/products/items', label: 'Product Items' },
           ],
         },
       ],
